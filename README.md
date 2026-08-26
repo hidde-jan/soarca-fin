@@ -32,14 +32,81 @@ async def run_my_tool(ctx: CommandContext) -> dict[str, str]:
     return {"output": "some result"}
 ```
 
-Save that as `fin.py` (or `app.py`), then drive it with the `soarca-fin` CLI
-(installed alongside the library, similar to Flask's own
-`flask --app hello run`):
+## Registering
 
-```bash
-soarca-fin register --token my-registration-secret  # once
-soarca-fin run  # every subsequent start
+A complete, runnable example - a `fin.py` with a single `ssh-runner`
+capability:
+
+```python
+# fin.py
+from soarca_fin import CommandContext, Fin, FinJobError
+
+fin = Fin("http://localhost:8080", display_name="example-ssh-fin")
+
+
+@fin.command(
+    "ssh-runner",
+    description="Runs a shell command over SSH against one target",
+    version="1.0.0",
+)
+async def run_ssh(ctx: CommandContext) -> dict[str, str]:
+    if ctx.target is None:
+        raise FinJobError("ssh-runner requires a target")
+
+    await ctx.report_progress(f"connecting to {ctx.target.target.name}")
+    ...  # your actual SSH logic here
+    return {"output": "some result"}
 ```
+
+Before registering for real, use `--dry-run` to see exactly what would be
+sent to `POST /fin/register` - the capabilities are derived from your
+`@fin.step`/`@fin.command` decorators, so this is the easiest way to check
+they look right (e.g. the right `type`/`description`/`version`) before
+committing to an identity:
+
+```console
+$ soarca-fin register --token my-registration-secret --dry-run
+{
+  "registration_token": "my-registration-secret",
+  "display_name": "example-ssh-fin",
+  "protocol_version": null,
+  "capabilities": [
+    {
+      "type": "ssh-runner",
+      "description": "Runs a shell command over SSH against one target",
+      "version": "1.0.0",
+      "step_examples": null
+    }
+  ]
+}
+```
+
+`--dry-run` never contacts SOARCA and never touches `registration_store` -
+it just builds and prints the request body. Once it looks right, register
+for real (this one-time step is never repeated automatically - see below):
+
+```console
+$ soarca-fin register --token my-registration-secret
+registered as fin_id=fin-a1b2c3
+$ soarca-fin run
+```
+
+If `--token` is omitted, `register` falls back to the
+`SOARCA_FIN_REGISTRATION_TOKEN` environment variable, then an interactive
+prompt (so the secret never has to appear in your shell history).
+
+Registration is a separate, explicit, one-time step - it is deliberately
+*not* part of `run()`, and never happens implicitly, so a plain
+`if __name__ == "__main__":` block that calls both `register()` and `run()`
+would be wrong (it would try to register a new Fin identity on every
+restart). Use the CLI's two separate subcommands instead, as shown above.
+
+`register` stores the issued `fin_id`/`fin_token` at
+`~/.soarca-fin/registration.json`, so `run` finds them automatically on
+every future start - re-registering is never required (and `run` will raise
+if it can't find a prior registration, rather than registering an unwanted
+new Fin identity for you). `registration_token` itself is never persisted;
+it's only a one-time bootstrap secret used for that one call.
 
 Like Flask, `--app` is optional: if the module is named `fin.py` or `app.py`
 and lives in the current directory, and the `Fin` instance is assigned to a
@@ -47,22 +114,6 @@ module-level variable named `fin` or `app`, soarca-fin finds it
 automatically. Otherwise pass `--app MODULE[:ATTRIBUTE]` (e.g.
 `--app my_fin:fin`), or set the `SOARCA_FIN_APP` environment variable
 instead of passing `--app` every time.
-
-Registration is a separate, explicit, one-time step - it is deliberately
-*not* part of `run()`, and never happens implicitly, so a plain
-`if __name__ == "__main__":` block that calls both `register()` and `run()`
-would be wrong (it would try to register a new Fin identity on every
-restart). Use the CLI's two separate subcommands instead, as shown above.
-If `--token` is omitted, `register` falls back to the
-`SOARCA_FIN_REGISTRATION_TOKEN` environment variable, then an interactive
-prompt.
-
-`register()` stores the issued `fin_id`/`fin_token` at
-`~/.soarca-fin/registration.json`, so `run()` finds them automatically on
-every future start - re-registering is never required (and `run()` will
-raise if it can't find a prior registration, rather than registering an
-unwanted new Fin identity for you). `registration_token` itself is never
-persisted; it's only a one-time bootstrap secret used for that one call.
 
 Raise `soarca_fin.FinJobError("reason")` from a handler to fail that
 command/target explicitly. Any other exception fails it too, using its
@@ -149,6 +200,14 @@ own secrets store):
 
 ```python
 fin.run(fin_token="already-known-token")
+```
+
+Programmatically, `fin.build_register_request(token)` gives you the same
+dry-run inspection the CLI's `--dry-run` flag uses - handy in a test or a
+`python -c "..."` one-liner without needing a running SOARCA instance:
+
+```python
+print(fin.build_register_request("my-registration-secret").model_dump_json(indent=2))
 ```
 
 ## Unregistering

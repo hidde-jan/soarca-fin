@@ -109,6 +109,12 @@ def _cmd_register(fin: Fin, args: argparse.Namespace) -> None:
     token = args.token or os.environ.get("SOARCA_FIN_REGISTRATION_TOKEN")
     if not token:
         token = getpass.getpass("Registration token: ")
+
+    if args.dry_run:
+        request = fin.build_register_request(token)
+        print(request.model_dump_json(indent=2))  # noqa: T201
+        return
+
     registration = fin.register(token)
     print(f"registered as fin_id={registration.fin_id}")  # noqa: T201
 
@@ -153,6 +159,13 @@ def _build_parser() -> argparse.ArgumentParser:
         "--token",
         help="registration token (defaults to SOARCA_FIN_REGISTRATION_TOKEN, "
         "or an interactive prompt if neither is given)",
+    )
+    register_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="print the exact JSON body that would be sent to POST /fin/register "
+        "(including derived capabilities), without contacting SOARCA or storing "
+        "anything",
     )
 
     run_parser = subparsers.add_parser("run", help="poll for and execute jobs")

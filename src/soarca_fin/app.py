@@ -184,6 +184,28 @@ class Fin:
         details."""
         return asyncio.run(self.register_async(registration_token))
 
+    def build_register_request(self, registration_token: str) -> RegisterRequest:
+        """Builds the exact :class:`~soarca_fin.models.RegisterRequest` body
+        :meth:`register`/:meth:`register_async` would send to ``POST
+        /fin/register`` - including the capabilities derived from your
+        ``@fin.step``/``@fin.command`` handlers - without making any network
+        call or touching ``registration_store``.
+
+        Useful for debugging what registration would actually declare, e.g.::
+
+            print(fin.build_register_request("token").model_dump_json(indent=2))
+
+        or via the CLI: ``soarca-fin register --dry-run``.
+        """
+        if not self._handlers:
+            raise FinError("no capability handlers registered - use @fin.step or @fin.command")
+
+        return RegisterRequest(
+            registration_token=registration_token,
+            display_name=self.display_name,
+            capabilities=[spec.to_capability() for spec in self._handlers.values()],
+        )
+
     async def register_async(self, registration_token: str) -> FinRegistration:
         """Registers this Fin process with SOARCA using ``registration_token``
         (the shared secret configured server-side as
@@ -201,16 +223,10 @@ class Fin:
         Calling this again mints a brand new, unrelated Fin identity and
         overwrites any previously stored registration.
         """
-        if not self._handlers:
-            raise FinError("no capability handlers registered - use @fin.step or @fin.command")
+        request = self.build_register_request(registration_token)
 
         async with httpx.AsyncClient(base_url=self.base_url.rstrip("/")) as http_client:
             client = SoarcaClient(self.base_url, http_client=http_client)
-            request = RegisterRequest(
-                registration_token=registration_token,
-                display_name=self.display_name,
-                capabilities=[spec.to_capability() for spec in self._handlers.values()],
-            )
             response = await client.register(request)
 
         registration = FinRegistration(

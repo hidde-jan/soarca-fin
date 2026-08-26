@@ -79,6 +79,30 @@ async def test_register_async_without_handlers_raises() -> None:
         await fin.register_async("secret")
 
 
+def test_build_register_request_without_handlers_raises() -> None:
+    fin = Fin(BASE_URL)
+    with pytest.raises(FinError, match="no capability handlers"):
+        fin.build_register_request("secret")
+
+
+def test_build_register_request_reflects_handlers_without_network_or_storage() -> None:
+    store = InMemoryRegistrationStore()
+    fin = Fin(BASE_URL, display_name="my-fin", registration_store=store)
+
+    @fin.command("ssh-runner", description="Runs commands over SSH")
+    async def handler(ctx: CommandContext) -> None:
+        pass
+
+    request = fin.build_register_request("my-registration-secret")
+
+    assert request.registration_token == "my-registration-secret"
+    assert request.display_name == "my-fin"
+    assert [c.type for c in request.capabilities] == ["ssh-runner"]
+    assert request.capabilities[0].description == "Runs commands over SSH"
+    # Purely local - no registration should have been attempted or stored.
+    assert store.load() is None
+
+
 async def test_run_async_without_registration_or_fin_token_raises() -> None:
     fin = Fin(BASE_URL, registration_store=InMemoryRegistrationStore())
 

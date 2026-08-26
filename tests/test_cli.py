@@ -148,6 +148,28 @@ def test_main_register_dispatches_with_token(isolated_sys_path, monkeypatch):
     mock_register.assert_called_once_with("my-secret")
 
 
+def test_main_register_dry_run_skips_actual_registration(isolated_sys_path, monkeypatch, capsys):
+    _write_module(
+        isolated_sys_path,
+        "cli_fixture_register_dry_run",
+        'from soarca_fin import Fin\n\nfin = Fin("http://example.test")\n\n\n'
+        '@fin.command("ssh-runner")\n'
+        "async def handler(ctx):\n"
+        "    pass\n",
+    )
+    mock_register = Mock()
+    monkeypatch.setattr(Fin, "register", mock_register)
+
+    cli.main(
+        ["--app", "cli_fixture_register_dry_run", "register", "--token", "my-secret", "--dry-run"]
+    )
+
+    mock_register.assert_not_called()
+    output = capsys.readouterr().out
+    assert '"registration_token": "my-secret"' in output
+    assert '"ssh-runner"' in output
+
+
 def test_main_register_falls_back_to_env_token(isolated_sys_path, monkeypatch):
     _write_module(
         isolated_sys_path,

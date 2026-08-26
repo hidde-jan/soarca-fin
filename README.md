@@ -151,6 +151,24 @@ own secrets store):
 fin.run(fin_token="already-known-token")
 ```
 
+## Unregistering
+
+```bash
+soarca-fin unregister
+```
+
+Removes this Fin's registration from SOARCA and clears the local
+`registration_store`. By default it acts on the stored registration; pass
+both `--fin-id` and `--fin-token` to unregister a different Fin identity
+instead (e.g. one you're cleaning up after losing the local store) - a Fin
+can only unregister itself, so mismatched credentials are rejected by
+SOARCA. Programmatically:
+
+```python
+fin.unregister()  # uses the stored registration
+fin.unregister(fin_id="fin-1", fin_token="already-known-token")  # explicit
+```
+
 ## Concurrency
 
 ```python

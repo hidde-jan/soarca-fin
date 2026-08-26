@@ -231,6 +231,114 @@ async def test_run_async_rejected_token_clears_store_and_raises() -> None:
     assert store.load() is None
 
 
+@respx.mock
+async def test_unregister_async_uses_stored_registration_and_clears_store() -> None:
+    store = InMemoryRegistrationStore()
+    store.save(
+        FinRegistration(
+            fin_id="fin-1",
+            fin_token="token-1",
+            poll_interval_seconds=5,
+            long_poll_timeout_seconds=30,
+            job_lease_seconds=60,
+        )
+    )
+    fin = Fin(BASE_URL, registration_store=store)
+
+    route = respx.delete(f"{BASE_URL}/fin/fin-1").mock(return_value=httpx.Response(204))
+
+    await fin.unregister_async()
+
+    assert route.called
+    assert route.calls.last.request.headers["Authorization"] == "Bearer token-1"
+    assert store.load() is None
+
+
+@respx.mock
+async def test_unregister_async_with_explicit_credentials_leaves_unrelated_store_alone() -> None:
+    store = InMemoryRegistrationStore()
+    store.save(
+        FinRegistration(
+            fin_id="fin-1",
+            fin_token="token-1",
+            poll_interval_seconds=5,
+            long_poll_timeout_seconds=30,
+            job_lease_seconds=60,
+        )
+    )
+    fin = Fin(BASE_URL, registration_store=store)
+
+    route = respx.delete(f"{BASE_URL}/fin/fin-2").mock(return_value=httpx.Response(204))
+
+    await fin.unregister_async(fin_id="fin-2", fin_token="token-2")
+
+    assert route.called
+    # fin-1 is a different, unrelated registration - it must not be wiped
+    # out just because *some* unregister call happened.
+    assert store.load() is not None
+    assert store.load().fin_id == "fin-1"  # type: ignore[union-attr]
+
+
+@respx.mock
+async def test_unregister_async_explicit_credentials_matching_store_clears_it() -> None:
+    store = InMemoryRegistrationStore()
+    store.save(
+        FinRegistration(
+            fin_id="fin-1",
+            fin_token="token-1",
+            poll_interval_seconds=5,
+            long_poll_timeout_seconds=30,
+            job_lease_seconds=60,
+        )
+    )
+    fin = Fin(BASE_URL, registration_store=store)
+
+    respx.delete(f"{BASE_URL}/fin/fin-1").mock(return_value=httpx.Response(204))
+
+    await fin.unregister_async(fin_id="fin-1", fin_token="token-1")
+
+    assert store.load() is None
+
+
+async def test_unregister_async_without_registration_or_args_raises() -> None:
+    fin = Fin(BASE_URL, registration_store=InMemoryRegistrationStore())
+    with pytest.raises(FinError, match="not registered"):
+        await fin.unregister_async()
+
+
+async def test_unregister_async_partial_args_raises() -> None:
+    fin = Fin(BASE_URL, registration_store=InMemoryRegistrationStore())
+    with pytest.raises(FinError, match="pass both"):
+        await fin.unregister_async(fin_id="fin-1")
+
+
+@respx.mock
+async def test_unregister_async_propagates_api_error() -> None:
+    from soarca_fin.exceptions import SoarcaApiError
+
+    store = InMemoryRegistrationStore()
+    store.save(
+        FinRegistration(
+            fin_id="fin-1",
+            fin_token="token-1",
+            poll_interval_seconds=5,
+            long_poll_timeout_seconds=30,
+            job_lease_seconds=60,
+        )
+    )
+    fin = Fin(BASE_URL, registration_store=store)
+
+    respx.delete(f"{BASE_URL}/fin/fin-1").mock(
+        return_value=httpx.Response(500, json={"message": "boom"})
+    )
+
+    with pytest.raises(SoarcaApiError):
+        await fin.unregister_async()
+
+    # A failed unregister must not clear a still-potentially-valid store.
+    assert store.load() is not None
+
+
 async def _run_until_submitted(
     fin: Fin, submit_route: respx.Route, *, fin_token: str | None = None
 ) -> None:

@@ -1,10 +1,14 @@
 """The public framework surface: the ``Fin`` application object.
 
-Typical usage::
+Typical usage - registration is a separate, explicit, one-time step, never
+part of the normal run loop, so define the ``Fin`` in a module and drive it
+via the ``soarca-fin`` CLI (see :mod:`soarca_fin.cli`) rather than calling
+both ``register()`` and ``run()`` unconditionally from the same script::
 
+    # my_fin.py
     from soarca_fin import Fin, CommandContext
 
-    fin = Fin("http://localhost:8080", registration_token="secret")
+    fin = Fin("http://localhost:8080")
 
 
     @fin.command("my-tool", description="Runs my-tool over SSH")
@@ -12,8 +16,10 @@ Typical usage::
         ...
         return {"output": "..."}
 
+Then, from a shell::
 
-    fin.run()
+    soarca-fin --app my_fin:fin register --token my-registration-secret  # once
+    soarca-fin --app my_fin:fin run  # every subsequent run
 """
 
 from __future__ import annotations
@@ -28,7 +34,6 @@ import httpx
 
 from soarca_fin.client import SoarcaClient
 from soarca_fin.context import ReportProgress
-from soarca_fin.credentials import Credentials, CredentialStore, FileCredentialStore
 from soarca_fin.exceptions import AuthenticationError, FinError
 from soarca_fin.models import (
     Job,
@@ -36,6 +41,7 @@ from soarca_fin.models import (
     RegisterRequest,
     StatusPingRequest,
 )
+from soarca_fin.registration import FileRegistrationStore, FinRegistration, RegistrationStore
 from soarca_fin.registry import CommandHandler, HandlerKind, HandlerSpec, StepHandler
 from soarca_fin.runner import run_job
 
@@ -45,42 +51,53 @@ _DEFAULT_STATUS_PING_FRACTION = 0.5
 """Send a status ping this fraction of the way through the job's lease, to
 keep it comfortably alive without hammering the server."""
 
+_DEFAULT_POLL_INTERVAL_SECONDS = 5
+_DEFAULT_LONG_POLL_TIMEOUT_SECONDS = 30
+_DEFAULT_JOB_LEASE_SECONDS = 60
+"""Used only when running with an explicit fin_token and no operational
+parameter override given (so the actual values SOARCA's /fin/register would
+have returned are unknown). Override via run()/run_async() if these don't
+match your SOARCA instance's configuration."""
+
 
 class Fin:
     """A Fin process: a pool of capability handlers, registered with one
     SOARCA instance and run against it.
 
     :param base_url: SOARCA's base URL, e.g. ``"http://localhost:8080"``.
-    :param registration_token: The shared secret SOARCA requires for
-        ``POST /fin/register`` (``FIN_REGISTRATION_TOKEN`` server-side).
-        Only needed the first time this Fin process registers; a
-        previously stored ``fin_token`` (see ``credential_store``) is
-        reused afterwards without it.
     :param display_name: Human-readable name shown in SOARCA's Fin
-        discovery/admin views. Defaults to the process's own best guess
-        (``sys.argv[0]``) if not given.
-    :param credential_store: Where to persist the ``fin_id``/``fin_token``
-        issued at registration, so restarting this process doesn't
-        re-register a brand new identity. Defaults to a JSON file at
-        ``~/.soarca-fin/credentials.json``. Pass
-        :class:`~soarca_fin.credentials.InMemoryCredentialStore` to opt out
-        of persistence entirely.
+        discovery/admin views, used only when :meth:`register` is called.
+    :param registration_store: Where :meth:`register` persists the
+        :class:`~soarca_fin.registration.FinRegistration` it is issued
+        (credentials plus server-chosen operational parameters), and where
+        :meth:`run`/:meth:`run_async` read it back from - so a registration
+        only ever needs to happen once, and restarting this process never
+        re-registers a new identity. Defaults to a JSON file at
+        ``~/.soarca-fin/registration.json``. Pass
+        :class:`~soarca_fin.registration.InMemoryRegistrationStore` to opt
+        out of persistence entirely (registration is then required on every
+        restart).
     :param concurrency: How many jobs this Fin process handles at once.
+
+    Registration is deliberately not automatic: call :meth:`register` (or
+    :meth:`register_async`) yourself, once, typically from a setup step
+    separate from your normal run - e.g. an operator-run CLI command,
+    rather than something that happens implicitly every time the Fin
+    process starts. :meth:`run`/:meth:`run_async` never register on your
+    behalf and raise if no usable registration can be found.
     """
 
     def __init__(
         self,
         base_url: str,
         *,
-        registration_token: str | None = None,
         display_name: str | None = None,
-        credential_store: CredentialStore | None = None,
+        registration_store: RegistrationStore | None = None,
         concurrency: int = 1,
     ) -> None:
         self.base_url = base_url
-        self.registration_token = registration_token
         self.display_name = display_name
-        self.credential_store = credential_store or FileCredentialStore()
+        self.registration_store = registration_store or FileRegistrationStore()
         self.concurrency = concurrency
         self._handlers: dict[str, HandlerSpec] = {}
 
@@ -105,7 +122,9 @@ class Fin:
         :class:`~soarca_fin.exceptions.FinJobError` (or let any other
         exception propagate) to fail the job.
         """
-        return self._register(capability_type, HandlerKind.STEP, description, version, examples)
+        return self._register_handler(
+            capability_type, HandlerKind.STEP, description, version, examples
+        )
 
     def command(
         self,
@@ -129,9 +148,11 @@ class Fin:
         other targets still run. The job overall fails if any target
         failed, matching SOARCA's built-in capabilities' behaviour.
         """
-        return self._register(capability_type, HandlerKind.COMMAND, description, version, examples)
+        return self._register_handler(
+            capability_type, HandlerKind.COMMAND, description, version, examples
+        )
 
-    def _register(
+    def _register_handler(
         self,
         capability_type: str,
         kind: HandlerKind,
@@ -157,24 +178,110 @@ class Fin:
 
         return decorator
 
-    def run(self) -> None:
-        """Blocking entry point: registers (if needed) and runs forever,
-        until interrupted (e.g. Ctrl-C / SIGTERM)."""
-        asyncio.run(self.run_async())
+    def register(self, registration_token: str) -> FinRegistration:
+        """Blocking wrapper around :meth:`register_async` - see there for
+        details."""
+        return asyncio.run(self.register_async(registration_token))
 
-    async def run_async(self) -> None:
-        """Async entry point, for callers who already manage their own
-        event loop (e.g. embedding a Fin inside a larger asyncio
-        application)."""
+    async def register_async(self, registration_token: str) -> FinRegistration:
+        """Registers this Fin process with SOARCA using ``registration_token``
+        (the shared secret configured server-side as
+        ``FIN_REGISTRATION_TOKEN``), and persists the resulting
+        :class:`~soarca_fin.registration.FinRegistration` via
+        ``registration_store`` so :meth:`run`/:meth:`run_async` can find it
+        afterwards.
+
+        This is an explicit, one-time setup step - call it yourself (e.g.
+        from a CLI flag or a separate setup script), not automatically on
+        every run. ``registration_token`` itself is a one-time bootstrap
+        secret and is **never persisted** - only the issued ``fin_id``/
+        ``fin_token`` and operational parameters are stored.
+
+        Calling this again mints a brand new, unrelated Fin identity and
+        overwrites any previously stored registration.
+        """
         if not self._handlers:
             raise FinError("no capability handlers registered - use @fin.step or @fin.command")
 
         async with httpx.AsyncClient(base_url=self.base_url.rstrip("/")) as http_client:
             client = SoarcaClient(self.base_url, http_client=http_client)
-            credentials = await self._ensure_registered(client)
+            request = RegisterRequest(
+                registration_token=registration_token,
+                display_name=self.display_name,
+                capabilities=[spec.to_capability() for spec in self._handlers.values()],
+            )
+            response = await client.register(request)
+
+        registration = FinRegistration(
+            fin_id=response.fin_id,
+            fin_token=response.fin_token,
+            poll_interval_seconds=response.poll_interval_seconds,
+            long_poll_timeout_seconds=response.long_poll_timeout_seconds,
+            job_lease_seconds=response.job_lease_seconds,
+        )
+        self.registration_store.save(registration)
+        logger.info("registered with SOARCA as fin_id=%s", registration.fin_id)
+        return registration
+
+    def run(
+        self,
+        *,
+        fin_token: str | None = None,
+        poll_interval_seconds: int = _DEFAULT_POLL_INTERVAL_SECONDS,
+        long_poll_timeout_seconds: int = _DEFAULT_LONG_POLL_TIMEOUT_SECONDS,
+        job_lease_seconds: int = _DEFAULT_JOB_LEASE_SECONDS,
+    ) -> None:
+        """Blocking entry point: runs forever, until interrupted (e.g.
+        Ctrl-C / SIGTERM). See :meth:`run_async` for parameter details."""
+        asyncio.run(
+            self.run_async(
+                fin_token=fin_token,
+                poll_interval_seconds=poll_interval_seconds,
+                long_poll_timeout_seconds=long_poll_timeout_seconds,
+                job_lease_seconds=job_lease_seconds,
+            )
+        )
+
+    async def run_async(
+        self,
+        *,
+        fin_token: str | None = None,
+        poll_interval_seconds: int = _DEFAULT_POLL_INTERVAL_SECONDS,
+        long_poll_timeout_seconds: int = _DEFAULT_LONG_POLL_TIMEOUT_SECONDS,
+        job_lease_seconds: int = _DEFAULT_JOB_LEASE_SECONDS,
+    ) -> None:
+        """Async entry point, for callers who already manage their own
+        event loop (e.g. embedding a Fin inside a larger asyncio
+        application).
+
+        Requires this Fin to already be registered: either a registration
+        was previously persisted by :meth:`register`/:meth:`register_async`
+        (the common case - loaded from ``registration_store``), or you pass
+        ``fin_token`` explicitly here (e.g. one you manage in your own
+        secrets store, obtained out-of-band). Raises
+        :class:`~soarca_fin.exceptions.FinError` if neither is available -
+        call :meth:`register` first.
+
+        :param fin_token: Use this token directly instead of reading from
+            ``registration_store``. Never persisted. Since the operational
+            parameters SOARCA would normally hand back at registration
+            aren't available in this mode, they default to conservative
+            values below - override ``poll_interval_seconds``/
+            ``long_poll_timeout_seconds``/``job_lease_seconds`` if you know
+            SOARCA's actual configuration.
+        """
+        if not self._handlers:
+            raise FinError("no capability handlers registered - use @fin.step or @fin.command")
+
+        registration = self._resolve_registration(
+            fin_token, poll_interval_seconds, long_poll_timeout_seconds, job_lease_seconds
+        )
+
+        async with httpx.AsyncClient(base_url=self.base_url.rstrip("/")) as http_client:
+            client = SoarcaClient(self.base_url, http_client=http_client)
 
             workers = [
-                asyncio.create_task(self._worker_loop(client, credentials))
+                asyncio.create_task(self._worker_loop(client, registration))
                 for _ in range(self.concurrency)
             ]
             try:
@@ -184,63 +291,66 @@ class Fin:
                     worker.cancel()
                 await asyncio.gather(*workers, return_exceptions=True)
 
-    async def _ensure_registered(self, client: SoarcaClient) -> Credentials:
-        existing = self.credential_store.load()
-        if existing is not None:
-            logger.info("reusing stored Fin credentials (fin_id=%s)", existing.fin_id)
-            return existing
-
-        if not self.registration_token:
-            raise FinError(
-                "no stored credentials and no registration_token provided - "
-                "cannot register with SOARCA"
+    def _resolve_registration(
+        self,
+        fin_token: str | None,
+        poll_interval_seconds: int,
+        long_poll_timeout_seconds: int,
+        job_lease_seconds: int,
+    ) -> FinRegistration:
+        if fin_token:
+            return FinRegistration(
+                fin_id="",
+                fin_token=fin_token,
+                poll_interval_seconds=poll_interval_seconds,
+                long_poll_timeout_seconds=long_poll_timeout_seconds,
+                job_lease_seconds=job_lease_seconds,
             )
 
-        request = RegisterRequest(
-            registration_token=self.registration_token,
-            display_name=self.display_name,
-            capabilities=[spec.to_capability() for spec in self._handlers.values()],
-        )
-        response = await client.register(request)
-        credentials = Credentials(
-            fin_id=response.fin_id,
-            fin_token=response.fin_token,
-            poll_interval_seconds=response.poll_interval_seconds,
-            long_poll_timeout_seconds=response.long_poll_timeout_seconds,
-            job_lease_seconds=response.job_lease_seconds,
-        )
-        self.credential_store.save(credentials)
-        logger.info("registered with SOARCA as fin_id=%s", credentials.fin_id)
-        return credentials
+        existing = self.registration_store.load()
+        if existing is not None:
+            logger.info("using stored Fin registration (fin_id=%s)", existing.fin_id)
+            return existing
 
-    async def _worker_loop(self, client: SoarcaClient, credentials: Credentials) -> None:
+        raise FinError(
+            "not registered - call register()/register_async() first, or pass fin_token= "
+            "explicitly to run()/run_async()"
+        )
+
+    async def _worker_loop(self, client: SoarcaClient, registration: FinRegistration) -> None:
         while True:
             try:
-                job = await self._poll_once(client, credentials)
+                job = await self._poll_once(client, registration)
             except AuthenticationError:
-                logger.warning("SOARCA rejected our fin_token - re-registering")
-                self.credential_store.clear()
-                credentials = await self._ensure_registered(client)
-                continue
+                logger.error(
+                    "SOARCA rejected our fin_token as invalid/unknown - clearing stored "
+                    "registration; call register() again before restarting"
+                )
+                self.registration_store.clear()
+                raise FinError(
+                    "SOARCA rejected our fin_token - it is stale or unknown; re-register"
+                ) from None
             except FinError as error:
                 logger.warning("poll failed: %s", error)
-                await asyncio.sleep(credentials.poll_interval_seconds)
+                await asyncio.sleep(registration.poll_interval_seconds)
                 continue
 
             if job is None:
                 continue
 
-            await self._execute_job(client, credentials, job)
+            await self._execute_job(client, registration, job)
 
-    async def _poll_once(self, client: SoarcaClient, credentials: Credentials) -> Job | None:
+    async def _poll_once(self, client: SoarcaClient, registration: FinRegistration) -> Job | None:
         response = await client.poll(
-            credentials.fin_token,
+            registration.fin_token,
             PollRequest(),
-            long_poll_timeout_seconds=credentials.long_poll_timeout_seconds,
+            long_poll_timeout_seconds=registration.long_poll_timeout_seconds,
         )
         return response.job if response else None
 
-    async def _execute_job(self, client: SoarcaClient, credentials: Credentials, job: Job) -> None:
+    async def _execute_job(
+        self, client: SoarcaClient, registration: FinRegistration, job: Job
+    ) -> None:
         spec = self._handlers.get(job.capability_type)
         if spec is None:
             logger.error(
@@ -252,14 +362,14 @@ class Fin:
 
         async def _report_progress(text: str) -> None:
             await client.status_ping(
-                credentials.fin_token, job.job_id, StatusPingRequest(progress=text)
+                registration.fin_token, job.job_id, StatusPingRequest(progress=text)
             )
 
         report_progress: ReportProgress = _report_progress
 
         keepalive_interval = job.lease_expires_in_seconds * _DEFAULT_STATUS_PING_FRACTION
         keepalive = asyncio.create_task(
-            self._keep_lease_alive(client, credentials, job, keepalive_interval)
+            self._keep_lease_alive(client, registration, job, keepalive_interval)
         )
         try:
             result = await run_job(job, spec, report_progress)
@@ -269,14 +379,14 @@ class Fin:
                 await keepalive
 
         try:
-            await client.submit_result(credentials.fin_token, job.job_id, result)
+            await client.submit_result(registration.fin_token, job.job_id, result)
         except FinError as error:
             logger.error("failed to submit result for job %s: %s", job.job_id, error)
 
     async def _keep_lease_alive(
-        self, client: SoarcaClient, credentials: Credentials, job: Job, interval: float
+        self, client: SoarcaClient, registration: FinRegistration, job: Job, interval: float
     ) -> None:
         while True:
             await asyncio.sleep(interval)
             with contextlib.suppress(FinError):
-                await client.status_ping(credentials.fin_token, job.job_id, StatusPingRequest())
+                await client.status_ping(registration.fin_token, job.job_id, StatusPingRequest())

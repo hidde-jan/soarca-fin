@@ -22,7 +22,7 @@ called once for every command against every target in a step (and once with
 ```python
 from soarca_fin import Fin, CommandContext
 
-fin = Fin("http://localhost:8080", registration_token="my-registration-secret")
+fin = Fin("http://localhost:8080")
 
 
 @fin.command("my-tool", description="Runs my-tool against a target")
@@ -30,21 +30,33 @@ async def run_my_tool(ctx: CommandContext) -> dict[str, str]:
     target = ctx.target.target if ctx.target else None
     print(f"running {ctx.command.command!r} against {target.name if target else 'no target'}")
     return {"output": "some result"}
-
-
-if __name__ == "__main__":
-    fin.run()
 ```
 
-Run it:
+Save that as `my_fin.py`, then drive it with the `soarca-fin` CLI (installed
+alongside the library, similar to Flask's own `flask --app hello run`) -
+`--app` follows Flask's `MODULE[:ATTRIBUTE]` convention and can also be set
+via `SOARCA_FIN_APP` instead of passing `--app` every time:
 
 ```bash
-uv run python my_fin.py
+soarca-fin --app my_fin:fin register --token my-registration-secret  # once
+soarca-fin --app my_fin:fin run  # every subsequent start
 ```
 
-On first run it registers with SOARCA using `registration_token` and stores
-the issued credentials at `~/.soarca-fin/credentials.json`, so subsequent
-restarts skip registration entirely.
+Registration is a separate, explicit, one-time step - it is deliberately
+*not* part of `run()`, and never happens implicitly, so a plain
+`if __name__ == "__main__":` block that calls both `register()` and `run()`
+would be wrong (it would try to register a new Fin identity on every
+restart). Use the CLI's two separate subcommands instead, as shown above.
+If `--token` is omitted, `register` falls back to the
+`SOARCA_FIN_REGISTRATION_TOKEN` environment variable, then an interactive
+prompt.
+
+`register()` stores the issued `fin_id`/`fin_token` at
+`~/.soarca-fin/registration.json`, so `run()` finds them automatically on
+every future start - re-registering is never required (and `run()` will
+raise if it can't find a prior registration, rather than registering an
+unwanted new Fin identity for you). `registration_token` itself is never
+persisted; it's only a one-time bootstrap secret used for that one call.
 
 Raise `soarca_fin.FinJobError("reason")` from a handler to fail that
 command/target explicitly. Any other exception fails it too, using its
@@ -61,7 +73,7 @@ step instead:
 ```python
 from soarca_fin import Fin, StepContext
 
-fin = Fin("http://localhost:8080", registration_token="my-registration-secret")
+fin = Fin("http://localhost:8080")
 
 
 @fin.step("my-tool")
@@ -103,28 +115,40 @@ async def run_my_tool(ctx: CommandContext) -> dict[str, str]:
     return {"output": "done"}
 ```
 
-## Credential storage
+## Registration storage
 
-By default, credentials persist to `~/.soarca-fin/credentials.json` (owner-only
-permissions). Pass a different store to customize this:
+A successful registration produces a `FinRegistration`: the `fin_id`/
+`fin_token` used to authenticate, plus the operational parameters SOARCA
+chose for this Fin (`poll_interval_seconds`, `long_poll_timeout_seconds`,
+`job_lease_seconds`). By default this is persisted to
+`~/.soarca-fin/registration.json` (owner-only permissions). Pass a different
+store to customize this:
 
 ```python
-from soarca_fin import Fin, FileCredentialStore, InMemoryCredentialStore
+from soarca_fin import Fin, FileRegistrationStore, InMemoryRegistrationStore
 
 # custom path
-fin = Fin(..., credential_store=FileCredentialStore("/etc/my-fin/credentials.json"))
+fin = Fin(..., registration_store=FileRegistrationStore("/etc/my-fin/registration.json"))
 
 # no persistence - re-registers as a new Fin identity on every restart
-fin = Fin(..., credential_store=InMemoryCredentialStore())
+fin = Fin(..., registration_store=InMemoryRegistrationStore())
 ```
 
-Implement the `CredentialStore` protocol yourself to use a secrets manager,
-database, etc.
+Implement the `RegistrationStore` protocol yourself to use a secrets
+manager, database, etc.
+
+You can also skip the registration store entirely and hand `run()` a
+`fin_token` you manage yourself (e.g. obtained out-of-band and kept in your
+own secrets store):
+
+```python
+fin.run(fin_token="already-known-token")
+```
 
 ## Concurrency
 
 ```python
-fin = Fin("http://localhost:8080", registration_token="...", concurrency=4)
+fin = Fin("http://localhost:8080", concurrency=4)
 ```
 
 Runs up to 4 jobs at a time, sharing one connection pool.

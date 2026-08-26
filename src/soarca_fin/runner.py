@@ -15,6 +15,7 @@ was seen last.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import timedelta
@@ -24,6 +25,8 @@ from soarca_fin.context import CommandContext, JobMeta, ReportProgress, StepCont
 from soarca_fin.exceptions import FinJobError
 from soarca_fin.models import Job, JobState, ResultRequest, TargetResult, Variable
 from soarca_fin.registry import HandlerKind, HandlerSpec, call_handler
+
+logger = logging.getLogger("soarca_fin")
 
 
 @dataclass(slots=True, frozen=True)
@@ -74,13 +77,21 @@ async def _run_step_handler(
     context = StepContext(
         job=meta, commands=job.commands, targets=job.targets, report_progress=report_progress
     )
+    logger.debug(
+        "job %s: invoking step handler with %d command(s), %d target(s)",
+        job.job_id,
+        len(job.commands),
+        len(job.targets),
+    )
     try:
         outcome = await call_handler(spec.func, context)
     except FinJobError as error:
+        logger.debug("job %s: step handler raised FinJobError: %s", job.job_id, error)
         return ResultRequest(
             state=JobState.FAILURE, variables=_as_variables(error.variables), error=str(error)
         )
     except Exception as error:  # noqa: BLE001 - any handler exception fails the job
+        logger.debug("job %s: step handler raised %s: %s", job.job_id, type(error).__name__, error)
         return ResultRequest(state=JobState.FAILURE, variables={}, error=str(error))
 
     if isinstance(outcome, StepResult):
@@ -114,9 +125,24 @@ async def _run_command_handler(
                 target_index=target_index,
                 report_progress=report_progress,
             )
+            logger.debug(
+                "job %s: invoking command handler for target_index=%s command_index=%d (type=%s)",
+                job.job_id,
+                target_index,
+                command_index,
+                command.type,
+            )
             try:
                 outcome = await call_handler(spec.func, context)
             except FinJobError as error:
+                logger.debug(
+                    "job %s: command handler raised FinJobError for target_index=%s "
+                    "command_index=%d: %s",
+                    job.job_id,
+                    target_index,
+                    command_index,
+                    error,
+                )
                 merged_variables.update(_as_variables(error.variables))
                 target_state = JobState.FAILURE
                 target_error = str(error)
@@ -124,6 +150,14 @@ async def _run_command_handler(
                 last_error = target_error
                 break
             except Exception as error:  # noqa: BLE001 - any handler exception fails this target
+                logger.debug(
+                    "job %s: command handler raised %s for target_index=%s command_index=%d: %s",
+                    job.job_id,
+                    type(error).__name__,
+                    target_index,
+                    command_index,
+                    error,
+                )
                 target_state = JobState.FAILURE
                 target_error = str(error)
                 failed_command_index = command_index

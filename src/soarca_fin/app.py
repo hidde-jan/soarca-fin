@@ -423,6 +423,14 @@ class Fin:
     async def _execute_job(
         self, client: SoarcaClient, registration: FinRegistration, job: Job
     ) -> None:
+        logger.info(
+            "received job job_id=%s capability_type=%s execution_id=%s step_id=%s",
+            job.job_id,
+            job.capability_type,
+            job.execution_id,
+            job.step_id,
+        )
+
         spec = self._handlers.get(job.capability_type)
         if spec is None:
             logger.error(
@@ -433,6 +441,7 @@ class Fin:
             return
 
         async def _report_progress(text: str) -> None:
+            logger.debug("job %s progress: %s", job.job_id, text)
             await client.status_ping(
                 registration.fin_token, job.job_id, StatusPingRequest(progress=text)
             )
@@ -444,21 +453,31 @@ class Fin:
             self._keep_lease_alive(client, registration, job, keepalive_interval)
         )
         try:
+            logger.debug(
+                "dispatching job %s to handler for capability_type=%r",
+                job.job_id,
+                job.capability_type,
+            )
             result = await run_job(job, spec, report_progress)
         finally:
             keepalive.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await keepalive
 
+        logger.debug("job %s result: state=%s error=%s", job.job_id, result.state, result.error)
+
         try:
             await client.submit_result(registration.fin_token, job.job_id, result)
         except FinError as error:
             logger.error("failed to submit result for job %s: %s", job.job_id, error)
+        else:
+            logger.info("completed job %s: state=%s", job.job_id, result.state)
 
     async def _keep_lease_alive(
         self, client: SoarcaClient, registration: FinRegistration, job: Job, interval: float
     ) -> None:
         while True:
             await asyncio.sleep(interval)
+            logger.debug("job %s lease keepalive ping", job.job_id)
             with contextlib.suppress(FinError):
                 await client.status_ping(registration.fin_token, job.job_id, StatusPingRequest())

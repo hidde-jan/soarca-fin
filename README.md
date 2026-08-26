@@ -81,7 +81,7 @@ $ soarca-fin register --token my-registration-secret --dry-run
 {
   "registration_token": "my-registration-secret",
   "display_name": "example-ssh-fin",
-  "protocol_version": null,
+  "protocol_version": "1",
   "capabilities": [
     {
       "type": "ssh-runner",

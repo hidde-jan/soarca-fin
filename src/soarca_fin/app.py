@@ -68,6 +68,10 @@ class Fin:
     :param base_url: SOARCA's base URL, e.g. ``"http://localhost:8080"``.
     :param display_name: Human-readable name shown in SOARCA's Fin
         discovery/admin views, used only when :meth:`register` is called.
+    :param protocol_version: Sent as ``protocol_version`` at registration -
+        the version of SOARCA's Fin protocol this process implements.
+        Defaults to ``"1"``; override only if you're deliberately targeting
+        a different protocol version.
     :param registration_store: Where :meth:`register` persists the
         :class:`~soarca_fin.registration.FinRegistration` it is issued
         (credentials plus server-chosen operational parameters), and where
@@ -93,11 +97,13 @@ class Fin:
         base_url: str,
         *,
         display_name: str | None = None,
+        protocol_version: str = "1",
         registration_store: RegistrationStore | None = None,
         concurrency: int = 1,
     ) -> None:
         self.base_url = base_url
         self.display_name = display_name
+        self.protocol_version = protocol_version
         self.registration_store = registration_store or FileRegistrationStore()
         self.concurrency = concurrency
         self._handlers: dict[str, HandlerSpec] = {}
@@ -203,6 +209,7 @@ class Fin:
         return RegisterRequest(
             registration_token=registration_token,
             display_name=self.display_name,
+            protocol_version=self.protocol_version,
             capabilities=[spec.to_capability() for spec in self._handlers.values()],
         )
 

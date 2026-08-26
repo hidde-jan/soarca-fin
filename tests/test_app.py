@@ -97,10 +97,21 @@ def test_build_register_request_reflects_handlers_without_network_or_storage() -
 
     assert request.registration_token == "my-registration-secret"
     assert request.display_name == "my-fin"
+    assert request.protocol_version == "1"
     assert [c.type for c in request.capabilities] == ["ssh-runner"]
     assert request.capabilities[0].description == "Runs commands over SSH"
     # Purely local - no registration should have been attempted or stored.
     assert store.load() is None
+
+
+def test_protocol_version_is_overridable() -> None:
+    fin = Fin(BASE_URL, protocol_version="2")
+
+    @fin.command("ssh-runner")
+    async def handler(ctx: CommandContext) -> None:
+        pass
+
+    assert fin.build_register_request("secret").protocol_version == "2"
 
 
 async def test_run_async_without_registration_or_fin_token_raises() -> None:

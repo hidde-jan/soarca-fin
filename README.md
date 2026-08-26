@@ -196,6 +196,44 @@ async def run_my_tool(ctx: CommandContext) -> dict[str, str]:
     return {"output": "done"}
 ```
 
+## Logging
+
+Running `soarca-fin run` (or `soarca-fin register`/`unregister`) configures
+Python's root logger for you via `logging.basicConfig()`, at `INFO` level by
+default, so you see each job's lifecycle without any setup:
+
+```
+2024-01-01 12:00:00,000 INFO     soarca_fin: received job job_id=... capability_type=my-tool execution_id=... step_id=...
+2024-01-01 12:00:00,050 INFO     soarca_fin: completed job job_id=...: state=success
+```
+
+Pass `--log-level DEBUG` to also see per-command/target handler dispatch and
+raw results (`soarca_fin.handler`/`soarca_fin` at `DEBUG`). This is a no-op
+if you're embedding `Fin` in an application that already configures its own
+logging - `basicConfig()` never overrides an existing setup.
+
+Both `CommandContext` and `StepContext` also expose `ctx.log`, a
+[`logging.LoggerAdapter`][logger-adapter] pre-bound with this job's
+identifying context (`job_id`, `execution_id`, `step_id`, `capability_type`,
+plus `target_index`/`command_index` for command handlers). Log through it
+instead of grabbing your own logger, so every line your handler emits is
+automatically traceable back to the job/command that produced it:
+
+```python
+@fin.command("my-tool")
+async def run_my_tool(ctx: CommandContext) -> dict[str, str]:
+    ctx.log.info("connecting to %s", ctx.target.target.name if ctx.target else "n/a")
+    ...
+    ctx.log.debug("raw output: %r", output)
+    return {"output": "done"}
+```
+
+```
+2024-01-01 12:00:00,010 INFO     soarca_fin.handler: [job_id=... target_index=0 command_index=0] connecting to system-1
+```
+
+[logger-adapter]: https://docs.python.org/3/library/logging.html#logging.LoggerAdapter
+
 ## Registration storage
 
 A successful registration produces a `FinRegistration`: the `fin_id`/

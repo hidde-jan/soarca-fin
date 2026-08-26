@@ -1,3 +1,4 @@
+import logging
 import sys
 from unittest.mock import Mock
 
@@ -146,6 +147,57 @@ def test_main_register_dispatches_with_token(isolated_sys_path, monkeypatch):
     cli.main(["--app", "cli_fixture_register", "register", "--token", "my-secret"])
 
     mock_register.assert_called_once_with("my-secret")
+
+
+def test_main_configures_root_logging_at_info_by_default(isolated_sys_path, monkeypatch):
+    _write_module(
+        isolated_sys_path,
+        "cli_fixture_log_default",
+        'from soarca_fin import Fin\n\nfin = Fin("http://example.test")\n',
+    )
+    monkeypatch.setattr(Fin, "register", Mock())
+    mock_basic_config = Mock()
+    monkeypatch.setattr(logging, "basicConfig", mock_basic_config)
+
+    cli.main(["--app", "cli_fixture_log_default", "register", "--token", "my-secret"])
+
+    mock_basic_config.assert_called_once()
+    assert mock_basic_config.call_args.kwargs["level"] == logging.INFO
+
+
+def test_main_log_level_flag_overrides_default(isolated_sys_path, monkeypatch):
+    _write_module(
+        isolated_sys_path,
+        "cli_fixture_log_debug",
+        'from soarca_fin import Fin\n\nfin = Fin("http://example.test")\n',
+    )
+    monkeypatch.setattr(Fin, "register", Mock())
+    mock_basic_config = Mock()
+    monkeypatch.setattr(logging, "basicConfig", mock_basic_config)
+
+    cli.main(
+        ["--log-level", "DEBUG", "--app", "cli_fixture_log_debug", "register", "--token", "secret"]
+    )
+
+    assert mock_basic_config.call_args.kwargs["level"] == logging.DEBUG
+
+
+def test_main_does_not_force_reconfigure_existing_logging_setup(isolated_sys_path, monkeypatch):
+    _write_module(
+        isolated_sys_path,
+        "cli_fixture_log_preconfigured",
+        'from soarca_fin import Fin\n\nfin = Fin("http://example.test")\n',
+    )
+    monkeypatch.setattr(Fin, "register", Mock())
+    mock_basic_config = Mock()
+    monkeypatch.setattr(logging, "basicConfig", mock_basic_config)
+
+    cli.main(["--app", "cli_fixture_log_preconfigured", "register", "--token", "secret"])
+
+    # basicConfig() is a documented no-op once a handler already exists on
+    # the root logger - we must never pass force=True, or we'd blow away an
+    # embedding application's own logging configuration.
+    assert "force" not in mock_basic_config.call_args.kwargs
 
 
 def test_main_register_dry_run_skips_actual_registration(isolated_sys_path, monkeypatch, capsys):

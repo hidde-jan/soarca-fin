@@ -4,6 +4,8 @@ semantics and the simpler full-step handler path."""
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from uuid import uuid4
 
 from soarca_fin.context import CommandContext, StepContext
@@ -159,9 +161,69 @@ async def test_step_handler_can_return_step_result_with_target_results() -> None
     assert result.target_results == []
 
 
-def test_sync_handler_is_supported() -> None:
-    import asyncio
+async def test_step_handler_receives_bound_logger_with_job_context() -> None:
+    seen: dict[str, object] = {}
 
+    async def handler(ctx: StepContext) -> None:
+        seen["log"] = ctx.log
+        seen["extra"] = dict(ctx.log.extra or {})
+
+    spec = HandlerSpec("test-tool", HandlerKind.STEP, handler, None, None, None)
+    job = _make_job(commands=[], targets=[])
+
+    await run_job(job, spec, _noop_progress)
+
+    assert isinstance(seen["log"], logging.LoggerAdapter)
+    extra = seen["extra"]
+    assert extra["job_id"] == str(job.job_id)
+    assert extra["execution_id"] == str(job.execution_id)
+    assert extra["step_id"] == job.step_id
+    assert extra["capability_type"] == job.capability_type
+
+
+async def test_command_handler_logger_includes_target_and_command_index() -> None:
+    seen: list[dict[str, object]] = []
+
+    async def handler(ctx: CommandContext) -> None:
+        seen.append(dict(ctx.log.extra or {}))
+
+    spec = HandlerSpec("test-tool", HandlerKind.COMMAND, handler, None, None, None)
+    job = _make_job(
+        commands=[Command(type="test", command="c1"), Command(type="test", command="c2")],
+        targets=[_target("t1"), _target("t2")],
+    )
+
+    await run_job(job, spec, _noop_progress)
+
+    assert [(extra["target_index"], extra["command_index"]) for extra in seen] == [
+        (0, 0),
+        (0, 1),
+        (1, 0),
+        (1, 1),
+    ]
+    # base job context is still present on every per-command logger
+    assert all(extra["job_id"] == str(job.job_id) for extra in seen)
+
+
+def test_context_logger_prefixes_messages_with_bound_fields(caplog) -> None:  # type: ignore[no-untyped-def]
+    async def handler(ctx: CommandContext) -> None:
+        ctx.log.info("hello")
+
+    spec = HandlerSpec("test-tool", HandlerKind.COMMAND, handler, None, None, None)
+    job = _make_job(commands=[Command(type="test", command="c1")], targets=[_target("t1")])
+
+    with caplog.at_level(logging.INFO, logger="soarca_fin.handler"):
+        asyncio.run(run_job(job, spec, _noop_progress))
+
+    assert len(caplog.records) == 1
+    message = caplog.records[0].getMessage()
+    assert f"job_id={job.job_id}" in message
+    assert "target_index=0" in message
+    assert "command_index=0" in message
+    assert message.endswith("hello")
+
+
+def test_sync_handler_is_supported() -> None:
     def handler(ctx: CommandContext) -> dict[str, str]:
         return {"sync": "yes"}
 

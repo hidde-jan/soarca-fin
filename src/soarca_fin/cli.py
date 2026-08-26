@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import getpass
 import importlib
+import logging
 import os
 import sys
 from pathlib import Path
@@ -150,6 +151,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "(defaults to the SOARCA_FIN_APP environment variable, then to fin.py "
         "or app.py in the current directory)",
     )
+    parser.add_argument(
+        "--log-level",
+        default="INFO",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        help="root logging level for this CLI invocation (default: %(default)s). "
+        "Use DEBUG to see per-command/target handler dispatch detail via "
+        "soarca_fin.handler (see ctx.log in your handlers).",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     register_parser = subparsers.add_parser(
@@ -197,6 +206,12 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> None:
     args = _build_parser().parse_args(argv)
+    # A no-op if a handler is already configured (e.g. this Fin is embedded
+    # in a larger application that manages its own logging setup).
+    logging.basicConfig(
+        level=getattr(logging, args.log_level),
+        format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
+    )
     fin = _load_fin(_resolve_app_spec(args.app))
 
     if args.command == "register":

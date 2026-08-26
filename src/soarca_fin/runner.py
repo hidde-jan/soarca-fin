@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
 
-from soarca_fin.context import CommandContext, JobMeta, ReportProgress, StepContext
+from soarca_fin.context import CommandContext, JobMeta, ReportProgress, StepContext, _bind_logger
 from soarca_fin.exceptions import FinJobError
 from soarca_fin.models import Job, JobState, ResultRequest, TargetResult, Variable
 from soarca_fin.registry import HandlerKind, HandlerSpec, call_handler
@@ -66,16 +66,30 @@ def _job_meta(job: Job) -> JobMeta:
 
 async def run_job(job: Job, spec: HandlerSpec, report_progress: ReportProgress) -> ResultRequest:
     meta = _job_meta(job)
+    handler_log = _bind_logger(
+        job_id=str(job.job_id),
+        execution_id=str(job.execution_id),
+        step_id=job.step_id,
+        capability_type=job.capability_type,
+    )
     if spec.kind is HandlerKind.STEP:
-        return await _run_step_handler(job, meta, spec, report_progress)
-    return await _run_command_handler(job, meta, spec, report_progress)
+        return await _run_step_handler(job, meta, spec, report_progress, handler_log)
+    return await _run_command_handler(job, meta, spec, report_progress, handler_log)
 
 
 async def _run_step_handler(
-    job: Job, meta: JobMeta, spec: HandlerSpec, report_progress: ReportProgress
+    job: Job,
+    meta: JobMeta,
+    spec: HandlerSpec,
+    report_progress: ReportProgress,
+    handler_log: logging.LoggerAdapter[logging.Logger],
 ) -> ResultRequest:
     context = StepContext(
-        job=meta, commands=job.commands, targets=job.targets, report_progress=report_progress
+        job=meta,
+        commands=job.commands,
+        targets=job.targets,
+        report_progress=report_progress,
+        log=handler_log,
     )
     logger.debug(
         "job %s: invoking step handler with %d command(s), %d target(s)",
@@ -104,7 +118,11 @@ async def _run_step_handler(
 
 
 async def _run_command_handler(
-    job: Job, meta: JobMeta, spec: HandlerSpec, report_progress: ReportProgress
+    job: Job,
+    meta: JobMeta,
+    spec: HandlerSpec,
+    report_progress: ReportProgress,
+    handler_log: logging.LoggerAdapter[logging.Logger],
 ) -> ResultRequest:
     merged_variables: dict[str, Variable] = {}
     target_results: list[TargetResult] = []
@@ -118,12 +136,18 @@ async def _run_command_handler(
         failed_command_index: int | None = None
 
         for command_index, command in enumerate(job.commands):
+            command_log = _bind_logger(
+                **dict(handler_log.extra or {}),
+                target_index=target_index,
+                command_index=command_index,
+            )
             context = CommandContext(
                 job=meta,
                 command=command,
                 target=target,
                 target_index=target_index,
                 report_progress=report_progress,
+                log=command_log,
             )
             logger.debug(
                 "job %s: invoking command handler for target_index=%s command_index=%d (type=%s)",

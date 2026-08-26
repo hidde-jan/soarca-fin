@@ -27,6 +27,21 @@ fin = Fin("http://localhost:8080", display_name="example-ssh-fin")
             "name": "Restart the nginx service",
             "agent": "ssh-runner--f3f0194f-99e6-4966-8512-de3806fecfdf",
             "commands": [{"type": "manual", "command": "sudo systemctl restart nginx"}],
+            # out_args (a standard CACAO step field) documents this
+            # capability's output-variable contract for playbook authors,
+            # without SOARCA needing to interpret/validate it - see the
+            # "Documenting a capability's variables" section of the README.
+            # step_variables gives each named variable its shape (type,
+            # description, and an example value) - out_args/in_args alone
+            # are just names.
+            "out_args": ["__ssh_output__"],
+            "step_variables": {
+                "__ssh_output__": {
+                    "type": "string",
+                    "description": "stdout produced by the remote command",
+                    "value": "some result",
+                }
+            },
         }
     ],
 )
@@ -40,13 +55,29 @@ async def run_ssh(ctx: CommandContext) -> dict[str, str]:
     ...  # your actual SSH logic here
 
     ctx.log.debug("command %r completed", ctx.command.command)
-    return {"output": "some result"}
+    return {"__ssh_output__": "some result"}
 
 
 @fin.step(
     "ssh-batch-runner",
     description="Runs a shell command over SSH against every target in the step",
     version="1.0.0",
+    examples=[
+        {
+            "type": "action",
+            "name": "Restart the nginx service on every web server",
+            "agent": "ssh-batch-runner--88f4c4df-fa96-44e6-b310-1c06d193ea56",
+            "commands": [{"type": "manual", "command": "sudo systemctl restart nginx"}],
+            "out_args": ["__ssh_batch_output__"],
+            "step_variables": {
+                "__ssh_batch_output__": {
+                    "type": "string",
+                    "description": "summary of the batch run across all targets",
+                    "value": "all targets completed",
+                }
+            },
+        }
+    ],
 )
 async def run_ssh_batch(ctx: StepContext) -> dict[str, str]:
     """Full-step handler: called once per job with every command/target,
@@ -60,4 +91,4 @@ async def run_ssh_batch(ctx: StepContext) -> dict[str, str]:
             ...  # your actual SSH logic here
             ctx.log.debug("ran %r on %s", command.command, target.target.name)
 
-    return {"output": "all targets completed"}
+    return {"__ssh_batch_output__": "all targets completed"}

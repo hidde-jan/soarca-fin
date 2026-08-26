@@ -59,6 +59,7 @@ fin = Fin("http://localhost:8080", display_name="example-ssh-fin")
             "name": "Restart the nginx service",
             "agent": "ssh-runner--f3f0194f-99e6-4966-8512-de3806fecfdf",
             "commands": [{"type": "manual", "command": "sudo systemctl restart nginx"}],
+            "out_args": ["__ssh_output__"],
         }
     ],
 )
@@ -68,12 +69,53 @@ async def run_ssh(ctx: CommandContext) -> dict[str, str]:
 
     await ctx.report_progress(f"connecting to {ctx.target.target.name}")
     ...  # your actual SSH logic here
-    return {"output": "some result"}
+    return {"__ssh_output__": "some result"}
 ```
 
 `examples` is optional and purely illustrative - full CACAO action steps
 shown to playbook authors (e.g. in SOARCA's admin UI) to demonstrate how to
 invoke this capability. SOARCA never interprets or validates them.
+
+### Documenting a capability's variables
+
+Nothing in the protocol tells a playbook author which `__variable__`
+references a capability reads (beyond what's baked into the command text
+itself) or which it produces - there's no separate input/output variable
+schema. Rather than inventing a new one, reuse CACAO's own step-level
+`in_args`/`out_args` fields (a plain list of variable names) inside your
+`examples`, exactly as shown above with `out_args: ["__ssh_output__"]`.
+Names alone don't say much though, so also add a matching entry per
+variable to the example step's `step_variables` - CACAO's own container for
+a variable's `type`/`description`/(example) `value` - to document each
+one's *shape*:
+
+```python
+examples=[
+    {
+        "type": "action",
+        "name": "Restart the nginx service",
+        "agent": "ssh-runner--f3f0194f-99e6-4966-8512-de3806fecfdf",
+        "commands": [{"type": "manual", "command": "sudo systemctl restart nginx"}],
+        "out_args": ["__ssh_output__"],
+        "step_variables": {
+            "__ssh_output__": {
+                "type": "string",
+                "description": "stdout produced by the remote command",
+                "value": "some result",
+            }
+        },
+    }
+]
+```
+
+Do the same for any variables you read via `in_args` (e.g. an optional
+override read directly off `ctx.job.variables` rather than embedded in the
+command text) so a playbook author knows both what to provide and what
+they'll get back, all in one place. Like the rest of `examples`, this is
+advisory only - SOARCA stores and displays it (e.g. in the Fins page) but
+never validates it - so it costs nothing beyond being accurate, and
+playbook authors get the same standard CACAO vocabulary they already use
+everywhere else instead of a bespoke one.
 
 Before registering for real, use `--dry-run` to see exactly what would be
 sent to `POST /fin/register` - the capabilities are derived from your
@@ -102,7 +144,17 @@ $ soarca-fin register --token my-registration-secret --dry-run
               "type": "manual",
               "command": "sudo systemctl restart nginx"
             }
-          ]
+          ],
+          "out_args": [
+            "__ssh_output__"
+          ],
+          "step_variables": {
+            "__ssh_output__": {
+              "type": "string",
+              "description": "stdout produced by the remote command",
+              "value": "some result"
+            }
+          }
         }
       ]
     }

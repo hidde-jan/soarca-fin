@@ -13,6 +13,11 @@ and timing.
 uv add soarca-fin
 ```
 
+A complete, runnable example lives in [`examples/fin.py`](examples/fin.py) -
+clone this repo, `cd examples`, and run `soarca-fin register --token
+my-registration-secret --dry-run` to see it in action without a running
+SOARCA instance.
+
 ## Quick start
 
 The simplest Fin implements one handler per `(command, target)` pair - it is

@@ -32,15 +32,21 @@ async def run_my_tool(ctx: CommandContext) -> dict[str, str]:
     return {"output": "some result"}
 ```
 
-Save that as `my_fin.py`, then drive it with the `soarca-fin` CLI (installed
-alongside the library, similar to Flask's own `flask --app hello run`) -
-`--app` follows Flask's `MODULE[:ATTRIBUTE]` convention and can also be set
-via `SOARCA_FIN_APP` instead of passing `--app` every time:
+Save that as `fin.py` (or `app.py`), then drive it with the `soarca-fin` CLI
+(installed alongside the library, similar to Flask's own
+`flask --app hello run`):
 
 ```bash
-soarca-fin --app my_fin:fin register --token my-registration-secret  # once
-soarca-fin --app my_fin:fin run  # every subsequent start
+soarca-fin register --token my-registration-secret  # once
+soarca-fin run  # every subsequent start
 ```
+
+Like Flask, `--app` is optional: if the module is named `fin.py` or `app.py`
+and lives in the current directory, and the `Fin` instance is assigned to a
+module-level variable named `fin` or `app`, soarca-fin finds it
+automatically. Otherwise pass `--app MODULE[:ATTRIBUTE]` (e.g.
+`--app my_fin:fin`), or set the `SOARCA_FIN_APP` environment variable
+instead of passing `--app` every time.
 
 Registration is a separate, explicit, one-time step - it is deliberately
 *not* part of `run()`, and never happens implicitly, so a plain

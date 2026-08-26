@@ -5,7 +5,7 @@ part of the normal run loop, so define the ``Fin`` in a module and drive it
 via the ``soarca-fin`` CLI (see :mod:`soarca_fin.cli`) rather than calling
 both ``register()`` and ``run()`` unconditionally from the same script::
 
-    # my_fin.py
+    # fin.py
     from soarca_fin import Fin, CommandContext
 
     fin = Fin("http://localhost:8080")
@@ -16,10 +16,11 @@ both ``register()`` and ``run()`` unconditionally from the same script::
         ...
         return {"output": "..."}
 
-Then, from a shell::
+Then, from a shell (``--app`` is only needed if your module/variable aren't
+named ``fin``/``app``; see :mod:`soarca_fin.cli`)::
 
-    soarca-fin --app my_fin:fin register --token my-registration-secret  # once
-    soarca-fin --app my_fin:fin run  # every subsequent run
+    soarca-fin register --token my-registration-secret  # once
+    soarca-fin run  # every subsequent run
 """
 
 from __future__ import annotations

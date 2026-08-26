@@ -66,7 +66,7 @@ def test_load_fin_missing_attribute_raises(isolated_sys_path):
 def test_load_fin_wrong_type_raises(isolated_sys_path):
     _write_module(isolated_sys_path, "cli_fixture_wrong_type", "fin = 42\n")
     with pytest.raises(SystemExit, match="is not a soarca_fin.Fin instance"):
-        cli._load_fin("cli_fixture_wrong_type")
+        cli._load_fin("cli_fixture_wrong_type:fin")
 
 
 def test_load_fin_import_error_raises():
@@ -83,10 +83,48 @@ def test_resolve_app_spec_from_env(monkeypatch):
     assert cli._resolve_app_spec(None) == "my_fin:fin"
 
 
-def test_resolve_app_spec_missing_raises(monkeypatch):
+def test_resolve_app_spec_missing_raises(monkeypatch, tmp_path):
     monkeypatch.delenv("SOARCA_FIN_APP", raising=False)
-    with pytest.raises(SystemExit, match="no app specified"):
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(SystemExit, match="no app found"):
         cli._resolve_app_spec(None)
+
+
+def test_resolve_app_spec_discovers_fin_py(monkeypatch, tmp_path):
+    monkeypatch.delenv("SOARCA_FIN_APP", raising=False)
+    (tmp_path / "fin.py").write_text("fin = 1\n")
+    monkeypatch.chdir(tmp_path)
+    assert cli._resolve_app_spec(None) == "fin"
+
+
+def test_resolve_app_spec_discovers_app_py_when_no_fin_py(monkeypatch, tmp_path):
+    monkeypatch.delenv("SOARCA_FIN_APP", raising=False)
+    (tmp_path / "app.py").write_text("fin = 1\n")
+    monkeypatch.chdir(tmp_path)
+    assert cli._resolve_app_spec(None) == "app"
+
+
+def test_resolve_app_spec_prefers_fin_py_over_app_py(monkeypatch, tmp_path):
+    monkeypatch.delenv("SOARCA_FIN_APP", raising=False)
+    (tmp_path / "fin.py").write_text("fin = 1\n")
+    (tmp_path / "app.py").write_text("fin = 1\n")
+    monkeypatch.chdir(tmp_path)
+    assert cli._resolve_app_spec(None) == "fin"
+
+
+def test_load_fin_default_discovery_finds_app_attr(tmp_path, monkeypatch):
+    _write_module(
+        tmp_path,
+        "app",
+        'from soarca_fin import Fin\n\napp = Fin("http://example.test")\n',
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    try:
+        fin = cli._load_fin(cli._resolve_app_spec(None))
+        assert isinstance(fin, Fin)
+    finally:
+        sys.modules.pop("app", None)
 
 
 def test_main_register_dispatches_with_token(isolated_sys_path, monkeypatch):

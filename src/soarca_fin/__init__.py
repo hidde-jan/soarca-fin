@@ -1,6 +1,6 @@
 """soarca_fin: a Flask-like library for implementing SOARCA Fins in Python.
 
-Quick start - save this as ``my_fin.py``::
+Quick start - save this as ``fin.py``::
 
     from soarca_fin import Fin, CommandContext
 
@@ -12,10 +12,11 @@ Quick start - save this as ``my_fin.py``::
         ...
         return {"output": "..."}
 
-Then drive it with the ``soarca-fin`` CLI, similar to ``flask --app``::
+Then drive it with the ``soarca-fin`` CLI, similar to ``flask --app``. Like
+Flask, ``--app`` is optional - it's auto-discovered here from ``fin.py``::
 
-    soarca-fin --app my_fin:fin register --token my-registration-secret  # once
-    soarca-fin --app my_fin:fin run  # every subsequent run
+    soarca-fin register --token my-registration-secret  # once
+    soarca-fin run  # every subsequent run
 """
 
 from soarca_fin.app import Fin

@@ -3,15 +3,18 @@
 
 Usage::
 
-    soarca-fin --app my_fin:fin register
-    soarca-fin --app my_fin:fin run
+    soarca-fin register
+    soarca-fin run
 
-``--app`` follows Flask's convention: ``MODULE[:ATTRIBUTE]``. If
-``ATTRIBUTE`` is omitted, a module-level variable named ``fin`` is used
-(falling back to the only :class:`~soarca_fin.app.Fin` instance found at
-module level, if there is exactly one). Can also be set via the
-``SOARCA_FIN_APP`` environment variable instead of passing ``--app`` every
-time.
+Like Flask, ``--app`` is optional. If omitted (and ``SOARCA_FIN_APP`` isn't
+set either), soarca-fin looks for ``fin.py`` then ``app.py`` in the current
+directory - so the common case needs no flag at all. When needed, ``--app``
+follows Flask's convention: ``MODULE[:ATTRIBUTE]``. If ``ATTRIBUTE`` is
+omitted, a module-level variable named ``fin`` (then ``app``) is used,
+falling back to the only :class:`~soarca_fin.app.Fin` instance found at
+module level if there is exactly one. ``SOARCA_FIN_APP`` can be set instead
+of passing ``--app`` every time, e.g. for a Fin that doesn't live in
+``fin.py``/``app.py``.
 
 This exists specifically so registration and running are two clearly
 separate invocations - never both together in one script run - which is
@@ -26,47 +29,79 @@ import argparse
 import getpass
 import importlib
 import os
+import sys
+from pathlib import Path
 
 from soarca_fin.app import Fin
+
+_DEFAULT_APP_FILENAMES = ("fin.py", "app.py")
+_DEFAULT_APP_ATTRS = ("fin", "app")
+
+
+def _find_fin_instance(module: object, module_name: str) -> Fin:
+    for attr_name in _DEFAULT_APP_ATTRS:
+        obj = getattr(module, attr_name, None)
+        if isinstance(obj, Fin):
+            return obj
+
+    candidates = [value for value in vars(module).values() if isinstance(value, Fin)]
+    if len(candidates) == 1:
+        return candidates[0]
+    if not candidates:
+        raise SystemExit(
+            f"no Fin instance found in {module_name!r} - define one named `fin`, "
+            f"or pass --app {module_name}:<name>"
+        )
+    raise SystemExit(
+        f"multiple Fin instances found in {module_name!r} - "
+        f"pass --app {module_name}:<name> to disambiguate"
+    )
+
+
+def _import_module(module_name: str) -> object:
+    # Mirror Flask's behaviour: make the current directory importable so a
+    # bare `fin.py`/`app.py` next to where the CLI is invoked is found, even
+    # though it isn't installed as a package.
+    cwd = str(Path.cwd())
+    if cwd not in sys.path:
+        sys.path.insert(0, cwd)
+    try:
+        return importlib.import_module(module_name)
+    except ImportError as error:
+        raise SystemExit(f"could not import {module_name!r}: {error}") from error
 
 
 def _load_fin(app_spec: str) -> Fin:
     module_name, _, attr_name = app_spec.partition(":")
-    try:
-        module = importlib.import_module(module_name)
-    except ImportError as error:
-        raise SystemExit(f"could not import {module_name!r}: {error}") from error
+    module = _import_module(module_name)
 
     if attr_name:
         obj = getattr(module, attr_name, None)
         if obj is None:
             raise SystemExit(f"{module_name!r} has no attribute {attr_name!r}")
     else:
-        obj = getattr(module, "fin", None)
-        if obj is None:
-            candidates = [value for value in vars(module).values() if isinstance(value, Fin)]
-            if len(candidates) == 1:
-                obj = candidates[0]
-            elif not candidates:
-                raise SystemExit(
-                    f"no Fin instance found in {module_name!r} - define one named `fin`, "
-                    f"or pass --app {module_name}:<name>"
-                )
-            else:
-                raise SystemExit(
-                    f"multiple Fin instances found in {module_name!r} - "
-                    f"pass --app {module_name}:<name> to disambiguate"
-                )
+        obj = _find_fin_instance(module, module_name)
 
     if not isinstance(obj, Fin):
         raise SystemExit(f"{app_spec!r} is not a soarca_fin.Fin instance")
     return obj
 
 
+def _discover_default_app_spec() -> str | None:
+    cwd = Path.cwd()
+    for filename in _DEFAULT_APP_FILENAMES:
+        if (cwd / filename).is_file():
+            return filename.removesuffix(".py")
+    return None
+
+
 def _resolve_app_spec(args_app: str | None) -> str:
-    app_spec = args_app or os.environ.get("SOARCA_FIN_APP")
+    app_spec = args_app or os.environ.get("SOARCA_FIN_APP") or _discover_default_app_spec()
     if not app_spec:
-        raise SystemExit("no app specified - pass --app MODULE[:ATTRIBUTE] or set SOARCA_FIN_APP")
+        raise SystemExit(
+            "no app found - pass --app MODULE[:ATTRIBUTE], set SOARCA_FIN_APP, "
+            "or run from a directory containing fin.py or app.py"
+        )
     return app_spec
 
 
@@ -97,7 +132,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--app",
         help="MODULE[:ATTRIBUTE] pointing at your Fin instance, e.g. my_fin:fin "
-        "(defaults to the SOARCA_FIN_APP environment variable)",
+        "(defaults to the SOARCA_FIN_APP environment variable, then to fin.py "
+        "or app.py in the current directory)",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 

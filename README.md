@@ -48,6 +48,14 @@ fin = Fin("http://localhost:8080", display_name="example-ssh-fin")
     "ssh-runner",
     description="Runs a shell command over SSH against one target",
     version="1.0.0",
+    examples=[
+        {
+            "type": "action",
+            "name": "Restart the nginx service",
+            "agent": "ssh-runner--f3f0194f-99e6-4966-8512-de3806fecfdf",
+            "commands": [{"type": "manual", "command": "sudo systemctl restart nginx"}],
+        }
+    ],
 )
 async def run_ssh(ctx: CommandContext) -> dict[str, str]:
     if ctx.target is None:
@@ -58,11 +66,15 @@ async def run_ssh(ctx: CommandContext) -> dict[str, str]:
     return {"output": "some result"}
 ```
 
+`examples` is optional and purely illustrative - full CACAO action steps
+shown to playbook authors (e.g. in SOARCA's admin UI) to demonstrate how to
+invoke this capability. SOARCA never interprets or validates them.
+
 Before registering for real, use `--dry-run` to see exactly what would be
 sent to `POST /fin/register` - the capabilities are derived from your
 `@fin.step`/`@fin.command` decorators, so this is the easiest way to check
-they look right (e.g. the right `type`/`description`/`version`) before
-committing to an identity:
+they look right (e.g. the right `type`/`description`/`version`/`examples`)
+before committing to an identity:
 
 ```console
 $ soarca-fin register --token my-registration-secret --dry-run
@@ -75,7 +87,19 @@ $ soarca-fin register --token my-registration-secret --dry-run
       "type": "ssh-runner",
       "description": "Runs a shell command over SSH against one target",
       "version": "1.0.0",
-      "step_examples": null
+      "step_examples": [
+        {
+          "type": "action",
+          "name": "Restart the nginx service",
+          "agent": "ssh-runner--f3f0194f-99e6-4966-8512-de3806fecfdf",
+          "commands": [
+            {
+              "type": "manual",
+              "command": "sudo systemctl restart nginx"
+            }
+          ]
+        }
+      ]
     }
   ]
 }

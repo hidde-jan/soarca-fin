@@ -35,7 +35,7 @@ from pathlib import Path
 
 from soarca_fin.app import Fin
 
-_DEFAULT_APP_FILENAMES = ("fin.py", "app.py")
+_DEFAULT_APP_FILENAMES = ("fin.py", "app.py", "main.py")
 _DEFAULT_APP_ATTRS = ("fin", "app")
 
 

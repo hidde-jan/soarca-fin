@@ -238,6 +238,20 @@ def run_my_tool(ctx: CommandContext) -> dict[str, str]:
     return {"output": "some result"}
 ```
 
+**Prefer plain `def` over `async def` for handlers that wrap a blocking
+library** (`paramiko`, `requests`, `subprocess`, etc.) unless you know it
+has an async-native equivalent (`asyncssh`, `httpx`, ...). A blocking call
+made directly inside an `async def` handler - without `await`ing an
+async-native call or wrapping it yourself in `asyncio.to_thread` - stalls
+the whole Fin process's event loop, including the background task that
+keeps a long-running job's lease alive via periodic status pings
+(`job_lease_seconds`, halved). If that lease lapses because the loop was
+starved for too long, SOARCA assumes the job was abandoned and lets
+another Fin claim and re-run it - while your original, still-blocked
+handler is unaware and keeps going, so the same job can end up executed
+twice. Plain `def` handlers avoid this automatically, since they never run
+on the event loop thread at all.
+
 ## Progress reporting
 
 Both `CommandContext` and `StepContext` expose `report_progress`, an async

@@ -90,7 +90,7 @@ a variable's `type`/`description`/(example) `value` - to document each
 one's *shape*:
 
 ```python
-examples=[
+examples = [
     {
         "type": "action",
         "name": "Restart the nginx service",
@@ -368,6 +368,39 @@ fin = Fin("http://localhost:8080", concurrency=4)
 ```
 
 Runs up to 4 jobs at a time, sharing one connection pool.
+
+## Graceful shutdown
+
+`run()`/`run_async()` handle Ctrl-C (`SIGINT`) and `SIGTERM` gracefully by
+default: on the first signal, the Fin stops polling for *new* jobs but lets
+any job(s) already in flight finish - including submitting their result -
+before actually exiting. A **second** signal always forces an immediate
+shutdown, abandoning any in-flight job(s), the same "ask nicely once, then
+just kill it" convention used by most CLIs/process managers (e.g.
+`docker stop` escalating from `SIGTERM` to `SIGKILL`).
+
+If a handler might hang indefinitely and you'd rather not wait forever for
+it, cap how long the graceful phase lasts:
+
+```python
+fin.run(shutdown_grace_period_seconds=30)
+```
+
+```bash
+soarca-fin run --shutdown-grace-period 30
+```
+
+Once that many seconds have passed since the first signal without every
+in-flight job finishing on its own, the Fin forces a shutdown automatically
+- no second signal needed. Omit it (the default) to wait indefinitely.
+
+Graceful signal handling requires running on the main thread of a Unix-like
+event loop (the common case). On platforms/setups where that isn't
+possible (e.g. Windows' default event loop, or a Fin embedded via
+`run_async()` from a non-main thread), this is a no-op and only the
+default abrupt `KeyboardInterrupt`/external-cancellation behaviour applies
+- a plain `SIGKILL` was never catchable by any process to begin with, on
+any platform, and still isn't.
 
 ## Development
 

@@ -286,6 +286,20 @@ def test_main_run_passes_timing_overrides(isolated_sys_path, monkeypatch):
     )
 
 
+def test_main_run_passes_shutdown_grace_period(isolated_sys_path, monkeypatch):
+    _write_module(
+        isolated_sys_path,
+        "cli_fixture_run_grace_period",
+        'from soarca_fin import Fin\n\nfin = Fin("http://example.test")\n',
+    )
+    mock_run = Mock(return_value=None)
+    monkeypatch.setattr(Fin, "run", mock_run)
+
+    cli.main(["--app", "cli_fixture_run_grace_period", "run", "--shutdown-grace-period", "10"])
+
+    mock_run.assert_called_once_with(shutdown_grace_period_seconds=10.0)
+
+
 def test_main_unregister_dispatches_using_stored_registration(isolated_sys_path, monkeypatch):
     _write_module(
         isolated_sys_path,

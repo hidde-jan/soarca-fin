@@ -131,6 +131,8 @@ def _cmd_run(fin: Fin, args: argparse.Namespace) -> None:
         kwargs["long_poll_timeout_seconds"] = args.long_poll_timeout
     if args.job_lease_seconds is not None:
         kwargs["job_lease_seconds"] = args.job_lease_seconds
+    if args.shutdown_grace_period is not None:
+        kwargs["shutdown_grace_period_seconds"] = args.shutdown_grace_period
     fin.run(**kwargs)  # type: ignore[arg-type]
 
 
@@ -183,6 +185,15 @@ def _build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--poll-interval", type=int, default=None, metavar="SECONDS")
     run_parser.add_argument("--long-poll-timeout", type=int, default=None, metavar="SECONDS")
     run_parser.add_argument("--job-lease-seconds", type=int, default=None, metavar="SECONDS")
+    run_parser.add_argument(
+        "--shutdown-grace-period",
+        type=float,
+        default=None,
+        metavar="SECONDS",
+        help="on Ctrl-C/SIGTERM, wait up to this many seconds for in-flight job(s) to "
+        "finish before forcing an immediate shutdown (default: wait indefinitely). "
+        "A second Ctrl-C/SIGTERM always forces an immediate shutdown regardless.",
+    )
 
     unregister_parser = subparsers.add_parser(
         "unregister", help="remove this Fin's registration from SOARCA"

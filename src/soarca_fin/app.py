@@ -28,7 +28,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from collections.abc import Callable, Mapping
+import signal
+from collections.abc import Callable, Iterator, Mapping
 from typing import Any
 
 import httpx
@@ -254,6 +255,7 @@ class Fin:
         poll_interval_seconds: int = _DEFAULT_POLL_INTERVAL_SECONDS,
         long_poll_timeout_seconds: int = _DEFAULT_LONG_POLL_TIMEOUT_SECONDS,
         job_lease_seconds: int = _DEFAULT_JOB_LEASE_SECONDS,
+        shutdown_grace_period_seconds: float | None = None,
     ) -> None:
         """Blocking entry point: runs forever, until interrupted (e.g.
         Ctrl-C / SIGTERM). See :meth:`run_async` for parameter details."""
@@ -263,6 +265,7 @@ class Fin:
                 poll_interval_seconds=poll_interval_seconds,
                 long_poll_timeout_seconds=long_poll_timeout_seconds,
                 job_lease_seconds=job_lease_seconds,
+                shutdown_grace_period_seconds=shutdown_grace_period_seconds,
             )
         )
 
@@ -273,6 +276,7 @@ class Fin:
         poll_interval_seconds: int = _DEFAULT_POLL_INTERVAL_SECONDS,
         long_poll_timeout_seconds: int = _DEFAULT_LONG_POLL_TIMEOUT_SECONDS,
         job_lease_seconds: int = _DEFAULT_JOB_LEASE_SECONDS,
+        shutdown_grace_period_seconds: float | None = None,
     ) -> None:
         """Async entry point, for callers who already manage their own
         event loop (e.g. embedding a Fin inside a larger asyncio
@@ -293,6 +297,19 @@ class Fin:
             values below - override ``poll_interval_seconds``/
             ``long_poll_timeout_seconds``/``job_lease_seconds`` if you know
             SOARCA's actual configuration.
+        :param shutdown_grace_period_seconds: On SIGINT/SIGTERM (or a
+            KeyboardInterrupt on platforms without signal support, e.g.
+            Windows), this Fin stops polling for *new* jobs but lets any
+            job(s) already in flight finish and submit their result before
+            actually exiting - a soft/graceful shutdown, not an abrupt kill.
+            If given, in-flight jobs are instead force-cancelled once this
+            many seconds have passed without them finishing on their own
+            (use this if your handlers might hang and you'd rather lose a
+            job's result than have the process never exit). ``None`` (the
+            default) waits indefinitely. A *second* SIGINT/SIGTERM always
+            forces an immediate shutdown regardless of this setting - the
+            same "ask nicely once, then just kill it" convention used by
+            most CLIs/process managers.
         """
         if not self._handlers:
             raise FinError("no capability handlers registered - use @fin.step or @fin.command")
@@ -304,16 +321,113 @@ class Fin:
         async with httpx.AsyncClient(base_url=self.base_url.rstrip("/")) as http_client:
             client = SoarcaClient(self.base_url, http_client=http_client)
 
+            shutdown_event = asyncio.Event()
             workers = [
-                asyncio.create_task(self._worker_loop(client, registration))
+                asyncio.create_task(self._worker_loop(client, registration, shutdown_event))
                 for _ in range(self.concurrency)
             ]
-            try:
-                await asyncio.gather(*workers)
-            finally:
+
+            with self._install_shutdown_signal_handlers(workers, shutdown_event) as registered:
+                if not registered:
+                    logger.debug(
+                        "signal-based graceful shutdown is unavailable on this platform/thread "
+                        "- only an abrupt KeyboardInterrupt/cancellation is possible"
+                    )
+                try:
+                    if shutdown_grace_period_seconds is None:
+                        await asyncio.gather(*workers)
+                    else:
+                        await self._run_with_grace_period(
+                            workers, shutdown_event, shutdown_grace_period_seconds
+                        )
+                finally:
+                    for worker in workers:
+                        worker.cancel()
+                    await asyncio.gather(*workers, return_exceptions=True)
+
+    @contextlib.contextmanager
+    def _install_shutdown_signal_handlers(
+        self, workers: list[asyncio.Task[None]], shutdown_event: asyncio.Event
+    ) -> Iterator[bool]:
+        """Registers SIGINT/SIGTERM handlers that request a graceful
+        shutdown (stop polling for new work, let in-flight jobs finish) on
+        the first signal, and force-cancel every worker immediately on a
+        second one. Yields whether handlers were actually installed - not
+        possible on platforms without ``loop.add_signal_handler`` support
+        (e.g. Windows' default event loop) or when called from outside the
+        main thread, in which case this is a no-op and only the default
+        KeyboardInterrupt/external-cancellation behaviour applies.
+        """
+        loop = asyncio.get_running_loop()
+
+        def _handle_signal(sig: signal.Signals) -> None:
+            if shutdown_event.is_set():
+                logger.warning(
+                    "received %s again - forcing immediate shutdown, abandoning any "
+                    "in-flight job(s)",
+                    sig.name,
+                )
                 for worker in workers:
                     worker.cancel()
-                await asyncio.gather(*workers, return_exceptions=True)
+                return
+            logger.info(
+                "received %s - finishing in-flight job(s), no longer polling for new "
+                "work (send it again to force an immediate shutdown)",
+                sig.name,
+            )
+            shutdown_event.set()
+
+        installed: list[signal.Signals] = []
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                loop.add_signal_handler(sig, _handle_signal, sig)
+            except (NotImplementedError, RuntimeError):
+                # NotImplementedError: unsupported by this event loop (e.g.
+                # ProactorEventLoop on Windows). RuntimeError: not running in
+                # the main thread, where signal handlers can't be installed
+                # at all.
+                continue
+            installed.append(sig)
+
+        try:
+            yield bool(installed)
+        finally:
+            for sig in installed:
+                with contextlib.suppress(ValueError):
+                    loop.remove_signal_handler(sig)
+
+    async def _run_with_grace_period(
+        self,
+        workers: list[asyncio.Task[None]],
+        shutdown_event: asyncio.Event,
+        grace_period_seconds: float,
+    ) -> None:
+        """Like ``asyncio.gather(*workers)``, but once shutdown_event is
+        set, force-cancels any worker still running after
+        grace_period_seconds - so a handler that hangs forever can't
+        prevent the process from ever exiting."""
+
+        async def _enforce_grace_period() -> None:
+            await shutdown_event.wait()
+            try:
+                async with asyncio.timeout(grace_period_seconds):
+                    await asyncio.shield(asyncio.gather(*workers))
+            except TimeoutError:
+                logger.warning(
+                    "shutdown grace period (%.1fs) elapsed with job(s) still running - "
+                    "forcing immediate shutdown",
+                    grace_period_seconds,
+                )
+                for worker in workers:
+                    worker.cancel()
+
+        enforcer = asyncio.create_task(_enforce_grace_period())
+        try:
+            await asyncio.gather(*workers)
+        finally:
+            enforcer.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await enforcer
 
     def _resolve_registration(
         self,
@@ -382,10 +496,12 @@ class Fin:
 
         logger.info("unregistered fin from SOARCA")
 
-    async def _worker_loop(self, client: SoarcaClient, registration: FinRegistration) -> None:
-        while True:
+    async def _worker_loop(
+        self, client: SoarcaClient, registration: FinRegistration, shutdown_event: asyncio.Event
+    ) -> None:
+        while not shutdown_event.is_set():
             try:
-                job = await self._poll_once(client, registration)
+                job = await self._poll_once(client, registration, shutdown_event)
             except AuthenticationError:
                 logger.error(
                     "SOARCA rejected our fin_token as invalid/unknown - clearing stored "
@@ -403,15 +519,42 @@ class Fin:
             if job is None:
                 continue
 
+            # Always run a claimed job to completion, even if a graceful
+            # shutdown was requested while we were polling for it - once
+            # claimed, only a forced (second-signal or grace-period-expiry)
+            # shutdown abandons it.
             await self._execute_job(client, registration, job)
+        logger.debug("worker loop exiting: graceful shutdown, no job in flight")
 
-    async def _poll_once(self, client: SoarcaClient, registration: FinRegistration) -> Job | None:
-        response = await client.poll(
-            registration.fin_token,
-            PollRequest(),
-            long_poll_timeout_seconds=registration.long_poll_timeout_seconds,
+    async def _poll_once(
+        self, client: SoarcaClient, registration: FinRegistration, shutdown_event: asyncio.Event
+    ) -> Job | None:
+        poll_task = asyncio.create_task(
+            client.poll(
+                registration.fin_token,
+                PollRequest(),
+                long_poll_timeout_seconds=registration.long_poll_timeout_seconds,
+            )
         )
-        return response.job if response else None
+        shutdown_task = asyncio.create_task(shutdown_event.wait())
+        try:
+            done, _ = await asyncio.wait(
+                {poll_task, shutdown_task}, return_when=asyncio.FIRST_COMPLETED
+            )
+            if poll_task not in done:
+                # Shutdown was requested while long-polling for the next
+                # job - give up on this poll (there's no job to abandon:
+                # nothing was claimed yet) rather than waiting out the rest
+                # of long_poll_timeout_seconds.
+                return None
+            response = poll_task.result()
+            return response.job if response else None
+        finally:
+            for task in (poll_task, shutdown_task):
+                if not task.done():
+                    task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await task
 
     async def _execute_job(
         self, client: SoarcaClient, registration: FinRegistration, job: Job

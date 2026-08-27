@@ -280,7 +280,7 @@ async def test_unregister_async_uses_stored_registration_and_clears_store() -> N
     )
     fin = Fin(BASE_URL, registration_store=store)
 
-    route = respx.delete(f"{BASE_URL}/fin/fin-1").mock(return_value=httpx.Response(204))
+    route = respx.delete(f"{BASE_URL}/fin/").mock(return_value=httpx.Response(204))
 
     await fin.unregister_async()
 
@@ -290,7 +290,7 @@ async def test_unregister_async_uses_stored_registration_and_clears_store() -> N
 
 
 @respx.mock
-async def test_unregister_async_with_explicit_credentials_leaves_unrelated_store_alone() -> None:
+async def test_unregister_async_with_explicit_token_leaves_unrelated_store_alone() -> None:
     store = InMemoryRegistrationStore()
     store.save(
         FinRegistration(
@@ -303,19 +303,19 @@ async def test_unregister_async_with_explicit_credentials_leaves_unrelated_store
     )
     fin = Fin(BASE_URL, registration_store=store)
 
-    route = respx.delete(f"{BASE_URL}/fin/fin-2").mock(return_value=httpx.Response(204))
+    route = respx.delete(f"{BASE_URL}/fin/").mock(return_value=httpx.Response(204))
 
-    await fin.unregister_async(fin_id="fin-2", fin_token="token-2")
+    await fin.unregister_async(fin_token="token-2")
 
     assert route.called
-    # fin-1 is a different, unrelated registration - it must not be wiped
-    # out just because *some* unregister call happened.
+    # fin-1/token-1 is a different, unrelated registration - it must not be
+    # wiped out just because *some* unregister call happened.
     assert store.load() is not None
     assert store.load().fin_id == "fin-1"  # type: ignore[union-attr]
 
 
 @respx.mock
-async def test_unregister_async_explicit_credentials_matching_store_clears_it() -> None:
+async def test_unregister_async_explicit_token_matching_store_clears_it() -> None:
     store = InMemoryRegistrationStore()
     store.save(
         FinRegistration(
@@ -328,9 +328,9 @@ async def test_unregister_async_explicit_credentials_matching_store_clears_it() 
     )
     fin = Fin(BASE_URL, registration_store=store)
 
-    respx.delete(f"{BASE_URL}/fin/fin-1").mock(return_value=httpx.Response(204))
+    respx.delete(f"{BASE_URL}/fin/").mock(return_value=httpx.Response(204))
 
-    await fin.unregister_async(fin_id="fin-1", fin_token="token-1")
+    await fin.unregister_async(fin_token="token-1")
 
     assert store.load() is None
 
@@ -339,12 +339,6 @@ async def test_unregister_async_without_registration_or_args_raises() -> None:
     fin = Fin(BASE_URL, registration_store=InMemoryRegistrationStore())
     with pytest.raises(FinError, match="not registered"):
         await fin.unregister_async()
-
-
-async def test_unregister_async_partial_args_raises() -> None:
-    fin = Fin(BASE_URL, registration_store=InMemoryRegistrationStore())
-    with pytest.raises(FinError, match="pass both"):
-        await fin.unregister_async(fin_id="fin-1")
 
 
 @respx.mock
@@ -363,7 +357,7 @@ async def test_unregister_async_propagates_api_error() -> None:
     )
     fin = Fin(BASE_URL, registration_store=store)
 
-    respx.delete(f"{BASE_URL}/fin/fin-1").mock(
+    respx.delete(f"{BASE_URL}/fin/").mock(
         return_value=httpx.Response(500, json={"message": "boom"})
     )
 

@@ -135,12 +135,9 @@ def _cmd_run(fin: Fin, args: argparse.Namespace) -> None:
 
 
 def _cmd_unregister(fin: Fin, args: argparse.Namespace) -> None:
-    fin_id = args.fin_id or os.environ.get("SOARCA_FIN_ID")
     fin_token = args.fin_token or os.environ.get("SOARCA_FIN_TOKEN")
-    if (fin_id is None) != (fin_token is None):
-        raise SystemExit("pass both --fin-id and --fin-token, or neither")
-    fin.unregister(fin_id=fin_id, fin_token=fin_token)
-    print(f"unregistered fin_id={fin_id}" if fin_id else "unregistered stored Fin registration")  # noqa: T201
+    fin.unregister(fin_token=fin_token)
+    print("unregistered fin from SOARCA")  # noqa: T201
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -191,14 +188,9 @@ def _build_parser() -> argparse.ArgumentParser:
         "unregister", help="remove this Fin's registration from SOARCA"
     )
     unregister_parser.add_argument(
-        "--fin-id",
-        help="unregister this fin_id instead of the stored registration "
-        "(must be given together with --fin-token; defaults to SOARCA_FIN_ID)",
-    )
-    unregister_parser.add_argument(
         "--fin-token",
         help="authenticate as this fin_token instead of the stored registration "
-        "(must be given together with --fin-id; defaults to SOARCA_FIN_TOKEN)",
+        "(defaults to SOARCA_FIN_TOKEN)",
     )
 
     return parser

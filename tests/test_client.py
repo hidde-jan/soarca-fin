@@ -143,8 +143,8 @@ async def test_status_ping() -> None:
 
 @respx.mock
 async def test_unregister() -> None:
-    route = respx.delete(f"{BASE_URL}/fin/fin-1").mock(return_value=httpx.Response(204))
+    route = respx.delete(f"{BASE_URL}/fin/").mock(return_value=httpx.Response(204))
     async with SoarcaClient(BASE_URL) as client:
-        await client.unregister("token-1", "fin-1")
+        await client.unregister("token-1")
 
     assert route.called

@@ -127,8 +127,11 @@ class SoarcaClient:
             "extending job lease failed", status_code=response.status_code, body=response.text
         )
 
-    async def unregister(self, fin_token: str, fin_id: str) -> None:
-        response = await self._authenticated_request("DELETE", f"/fin/{fin_id}", fin_token)
+    async def unregister(self, fin_token: str) -> None:
+        """Unregisters the calling Fin itself. The fin_id is inferred
+        server-side from fin_token, so it is never sent explicitly - a Fin
+        can only ever unregister itself, never another one."""
+        response = await self._authenticated_request("DELETE", "/fin/", fin_token)
         if response.status_code != 204:
             raise SoarcaApiError(
                 "unregistering failed", status_code=response.status_code, body=response.text

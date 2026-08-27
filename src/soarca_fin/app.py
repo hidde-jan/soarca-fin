@@ -341,53 +341,46 @@ class Fin:
             "explicitly to run()/run_async()"
         )
 
-    def unregister(self, *, fin_id: str | None = None, fin_token: str | None = None) -> None:
+    def unregister(self, *, fin_token: str | None = None) -> None:
         """Blocking wrapper around :meth:`unregister_async` - see there for
         details."""
-        asyncio.run(self.unregister_async(fin_id=fin_id, fin_token=fin_token))
+        asyncio.run(self.unregister_async(fin_token=fin_token))
 
-    async def unregister_async(
-        self, *, fin_id: str | None = None, fin_token: str | None = None
-    ) -> None:
-        """Removes this Fin's registration from SOARCA (``DELETE
-        /fin/{fin_id}``, authenticated with that Fin's own ``fin_token`` - a
-        Fin may only unregister itself).
+    async def unregister_async(self, *, fin_token: str | None = None) -> None:
+        """Removes this Fin's registration from SOARCA (``DELETE /fin/``,
+        authenticated with this Fin's own ``fin_token``). The fin_id is
+        inferred server-side from the token - it's never sent explicitly,
+        since a Fin can only ever unregister itself.
 
-        If ``fin_id``/``fin_token`` aren't both given explicitly, they are
-        read from ``registration_store`` (the same store :meth:`register`/
-        :meth:`register_async` write to). Pass both explicitly to unregister
-        a Fin identity that isn't the one currently stored locally (e.g. one
+        If ``fin_token`` isn't given explicitly, it is read from
+        ``registration_store`` (the same store :meth:`register`/
+        :meth:`register_async` write to). Pass it explicitly to unregister a
+        Fin identity that isn't the one currently stored locally (e.g. one
         you tracked yourself, or are cleaning up after losing the local
         store).
 
-        Clears the stored registration afterwards, if it matches the
-        ``fin_id`` just unregistered, so a later :meth:`run`/:meth:`run_async`
+        Clears the stored registration afterwards, if its fin_token matches
+        the one just unregistered, so a later :meth:`run`/:meth:`run_async`
         correctly fails with "not registered" instead of retrying a token
         SOARCA no longer recognizes.
         """
-        if (fin_id is None) != (fin_token is None):
-            raise FinError(
-                "pass both fin_id= and fin_token= explicitly, or neither "
-                "(to use the stored registration)"
-            )
-
-        if fin_id is None or fin_token is None:
+        if fin_token is None:
             existing = self.registration_store.load()
             if existing is None:
                 raise FinError(
-                    "not registered - nothing to unregister (or pass fin_id=/fin_token= explicitly)"
+                    "not registered - nothing to unregister (or pass fin_token= explicitly)"
                 )
-            fin_id, fin_token = existing.fin_id, existing.fin_token
+            fin_token = existing.fin_token
 
         async with httpx.AsyncClient(base_url=self.base_url.rstrip("/")) as http_client:
             client = SoarcaClient(self.base_url, http_client=http_client)
-            await client.unregister(fin_token, fin_id)
+            await client.unregister(fin_token)
 
         stored = self.registration_store.load()
-        if stored is not None and stored.fin_id == fin_id:
+        if stored is not None and stored.fin_token == fin_token:
             self.registration_store.clear()
 
-        logger.info("unregistered fin_id=%s from SOARCA", fin_id)
+        logger.info("unregistered fin from SOARCA")
 
     async def _worker_loop(self, client: SoarcaClient, registration: FinRegistration) -> None:
         while True:

@@ -297,10 +297,10 @@ def test_main_unregister_dispatches_using_stored_registration(isolated_sys_path,
 
     cli.main(["--app", "cli_fixture_unregister_stored", "unregister"])
 
-    mock_unregister.assert_called_once_with(fin_id=None, fin_token=None)
+    mock_unregister.assert_called_once_with(fin_token=None)
 
 
-def test_main_unregister_dispatches_with_explicit_credentials(isolated_sys_path, monkeypatch):
+def test_main_unregister_dispatches_with_explicit_token(isolated_sys_path, monkeypatch):
     _write_module(
         isolated_sys_path,
         "cli_fixture_unregister_explicit",
@@ -314,29 +314,12 @@ def test_main_unregister_dispatches_with_explicit_credentials(isolated_sys_path,
             "--app",
             "cli_fixture_unregister_explicit",
             "unregister",
-            "--fin-id",
-            "fin-1",
             "--fin-token",
             "tok-1",
         ]
     )
 
-    mock_unregister.assert_called_once_with(fin_id="fin-1", fin_token="tok-1")
-
-
-def test_main_unregister_partial_credentials_raises(isolated_sys_path, monkeypatch):
-    _write_module(
-        isolated_sys_path,
-        "cli_fixture_unregister_partial",
-        'from soarca_fin import Fin\n\nfin = Fin("http://example.test")\n',
-    )
-    mock_unregister = Mock(return_value=None)
-    monkeypatch.setattr(Fin, "unregister", mock_unregister)
-
-    with pytest.raises(SystemExit, match="pass both"):
-        cli.main(["--app", "cli_fixture_unregister_partial", "unregister", "--fin-id", "fin-1"])
-
-    mock_unregister.assert_not_called()
+    mock_unregister.assert_called_once_with(fin_token="tok-1")
 
 
 def test_main_requires_command(isolated_sys_path):

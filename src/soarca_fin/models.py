@@ -88,6 +88,7 @@ class Command(_Model):
 
     type: str
     command: str | None = None
+    command_b64: str | None = None
     content: str | None = None
     content_b64: str | None = None
     headers: dict[str, list[str]] | None = None

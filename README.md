@@ -371,13 +371,14 @@ Runs up to 4 jobs at a time, sharing one connection pool.
 
 ## Graceful shutdown
 
-`run()`/`run_async()` handle Ctrl-C (`SIGINT`) and `SIGTERM` gracefully by
-default: on the first signal, the Fin stops polling for *new* jobs but lets
-any job(s) already in flight finish - including submitting their result -
-before actually exiting. A **second** signal always forces an immediate
-shutdown, abandoning any in-flight job(s), the same "ask nicely once, then
-just kill it" convention used by most CLIs/process managers (e.g.
-`docker stop` escalating from `SIGTERM` to `SIGKILL`).
+`run()` (and the `soarca-fin run` CLI, which uses it) handles Ctrl-C
+(`SIGINT`) and `SIGTERM` gracefully by default: on the first signal, the
+Fin stops polling for *new* jobs but lets any job(s) already in flight
+finish - including submitting their result - before actually exiting. A
+**second** signal always forces an immediate shutdown, abandoning any
+in-flight job(s), the same "ask nicely once, then just kill it"
+convention used by most CLIs/process managers (e.g. `docker stop`
+escalating from `SIGTERM` to `SIGKILL`).
 
 If a handler might hang indefinitely and you'd rather not wait forever for
 it, cap how long the graceful phase lasts:
@@ -394,13 +395,36 @@ Once that many seconds have passed since the first signal without every
 in-flight job finishing on its own, the Fin forces a shutdown automatically
 - no second signal needed. Omit it (the default) to wait indefinitely.
 
-Graceful signal handling requires running on the main thread of a Unix-like
-event loop (the common case). On platforms/setups where that isn't
-possible (e.g. Windows' default event loop, or a Fin embedded via
-`run_async()` from a non-main thread), this is a no-op and only the
-default abrupt `KeyboardInterrupt`/external-cancellation behaviour applies
-- a plain `SIGKILL` was never catchable by any process to begin with, on
-any platform, and still isn't.
+`run_async()` - unlike `run()` - never installs any signal handlers
+itself. It's the entry point for callers who already manage their own
+event loop (e.g. embedding a Fin inside a larger asyncio application), so
+installing signal handling there unconditionally would fight with, or
+silently override, whatever that application already does for
+`SIGINT`/`SIGTERM`. Instead, `run_async()`'s graceful shutdown is driven
+by an ordinary `asyncio.Event` that *you* create, pass in as
+`shutdown_event`, and set whenever you decide a shutdown should begin:
+
+```python
+shutdown_event = asyncio.Event()
+run_task = asyncio.create_task(fin.run_async(shutdown_event=shutdown_event))
+...
+shutdown_event.set()  # request a graceful shutdown from anywhere
+await run_task
+```
+
+To force an immediate shutdown instead (abandoning any in-flight job),
+cancel `run_task` directly rather than setting the event. If you're not
+embedding a Fin inside something else that already owns signal handling,
+just use `run()` (or the CLI) and you get the default behaviour above for
+free, without touching `shutdown_event` at all.
+
+Graceful signal handling (`run()`'s default) requires running on the main
+thread of a Unix-like event loop (the common case). On platforms/setups
+where that isn't possible (e.g. Windows' default event loop, or `run()`
+called from a non-main thread), it's a no-op and only the default abrupt
+`KeyboardInterrupt`/external-cancellation behaviour applies - a plain
+`SIGKILL` was never catchable by any process to begin with, on any
+platform, and still isn't.
 
 ## Development
 

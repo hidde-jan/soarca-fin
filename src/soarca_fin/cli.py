@@ -133,6 +133,8 @@ def _cmd_run(fin: Fin, args: argparse.Namespace) -> None:
         kwargs["job_lease_seconds"] = args.job_lease_seconds
     if args.shutdown_grace_period is not None:
         kwargs["shutdown_grace_period_seconds"] = args.shutdown_grace_period
+    # fin.run() installs this library's default Ctrl-C/SIGTERM handling
+    # (first signal graceful, second forces it) - see Fin.run's docstring.
     fin.run(**kwargs)  # type: ignore[arg-type]
 
 

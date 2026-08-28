@@ -29,7 +29,7 @@ import asyncio
 import contextlib
 import logging
 import signal
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Mapping
 from typing import Any
 
 import httpx
@@ -255,109 +255,47 @@ class Fin:
         poll_interval_seconds: int = _DEFAULT_POLL_INTERVAL_SECONDS,
         long_poll_timeout_seconds: int = _DEFAULT_LONG_POLL_TIMEOUT_SECONDS,
         job_lease_seconds: int = _DEFAULT_JOB_LEASE_SECONDS,
+        shutdown_event: asyncio.Event | None = None,
         shutdown_grace_period_seconds: float | None = None,
     ) -> None:
-        """Blocking entry point: runs forever, until interrupted (e.g.
-        Ctrl-C / SIGTERM). See :meth:`run_async` for parameter details."""
+        """Blocking entry point: this process is assumed to own its whole
+        event loop (like the ``soarca-fin`` CLI does), so - unlike
+        :meth:`run_async` - this installs default Ctrl-C
+        (``SIGINT``)/``SIGTERM`` handling for you: the first signal
+        requests a graceful shutdown (stop polling for new jobs, let any
+        in-flight one finish), a second forces an immediate one. Pass your
+        own ``shutdown_event`` if you additionally want to be able to
+        trigger a shutdown from elsewhere (e.g. another thread). See
+        :meth:`run_async` for the remaining parameters."""
         asyncio.run(
-            self.run_async(
+            self._run_with_default_signal_handling(
                 fin_token=fin_token,
                 poll_interval_seconds=poll_interval_seconds,
                 long_poll_timeout_seconds=long_poll_timeout_seconds,
                 job_lease_seconds=job_lease_seconds,
+                shutdown_event=shutdown_event,
                 shutdown_grace_period_seconds=shutdown_grace_period_seconds,
             )
         )
 
-    async def run_async(
+    async def _run_with_default_signal_handling(
         self,
         *,
-        fin_token: str | None = None,
-        poll_interval_seconds: int = _DEFAULT_POLL_INTERVAL_SECONDS,
-        long_poll_timeout_seconds: int = _DEFAULT_LONG_POLL_TIMEOUT_SECONDS,
-        job_lease_seconds: int = _DEFAULT_JOB_LEASE_SECONDS,
-        shutdown_grace_period_seconds: float | None = None,
+        shutdown_event: asyncio.Event | None = None,
+        **run_async_kwargs: Any,
     ) -> None:
-        """Async entry point, for callers who already manage their own
-        event loop (e.g. embedding a Fin inside a larger asyncio
-        application).
-
-        Requires this Fin to already be registered: either a registration
-        was previously persisted by :meth:`register`/:meth:`register_async`
-        (the common case - loaded from ``registration_store``), or you pass
-        ``fin_token`` explicitly here (e.g. one you manage in your own
-        secrets store, obtained out-of-band). Raises
-        :class:`~soarca_fin.exceptions.FinError` if neither is available -
-        call :meth:`register` first.
-
-        :param fin_token: Use this token directly instead of reading from
-            ``registration_store``. Never persisted. Since the operational
-            parameters SOARCA would normally hand back at registration
-            aren't available in this mode, they default to conservative
-            values below - override ``poll_interval_seconds``/
-            ``long_poll_timeout_seconds``/``job_lease_seconds`` if you know
-            SOARCA's actual configuration.
-        :param shutdown_grace_period_seconds: On SIGINT/SIGTERM (or a
-            KeyboardInterrupt on platforms without signal support, e.g.
-            Windows), this Fin stops polling for *new* jobs but lets any
-            job(s) already in flight finish and submit their result before
-            actually exiting - a soft/graceful shutdown, not an abrupt kill.
-            If given, in-flight jobs are instead force-cancelled once this
-            many seconds have passed without them finishing on their own
-            (use this if your handlers might hang and you'd rather lose a
-            job's result than have the process never exit). ``None`` (the
-            default) waits indefinitely. A *second* SIGINT/SIGTERM always
-            forces an immediate shutdown regardless of this setting - the
-            same "ask nicely once, then just kill it" convention used by
-            most CLIs/process managers.
+        """Runs :meth:`run_async` with this library's default standalone
+        signal handling installed on top of it: first ``SIGINT``/
+        ``SIGTERM`` requests a graceful shutdown via ``shutdown_event``, a
+        second cancels the run outright. Used by :meth:`run` and by the
+        ``soarca-fin`` CLI - the two "this process owns its own event
+        loop, nothing else is managing signals" entry points. Not used by
+        :meth:`run_async` itself - see its docstring for why.
         """
-        if not self._handlers:
-            raise FinError("no capability handlers registered - use @fin.step or @fin.command")
-
-        registration = self._resolve_registration(
-            fin_token, poll_interval_seconds, long_poll_timeout_seconds, job_lease_seconds
+        shutdown_event = shutdown_event or asyncio.Event()
+        run_task = asyncio.ensure_future(
+            self.run_async(shutdown_event=shutdown_event, **run_async_kwargs)
         )
-
-        async with httpx.AsyncClient(base_url=self.base_url.rstrip("/")) as http_client:
-            client = SoarcaClient(self.base_url, http_client=http_client)
-
-            shutdown_event = asyncio.Event()
-            workers = [
-                asyncio.create_task(self._worker_loop(client, registration, shutdown_event))
-                for _ in range(self.concurrency)
-            ]
-
-            with self._install_shutdown_signal_handlers(workers, shutdown_event) as registered:
-                if not registered:
-                    logger.debug(
-                        "signal-based graceful shutdown is unavailable on this platform/thread "
-                        "- only an abrupt KeyboardInterrupt/cancellation is possible"
-                    )
-                try:
-                    if shutdown_grace_period_seconds is None:
-                        await asyncio.gather(*workers)
-                    else:
-                        await self._run_with_grace_period(
-                            workers, shutdown_event, shutdown_grace_period_seconds
-                        )
-                finally:
-                    for worker in workers:
-                        worker.cancel()
-                    await asyncio.gather(*workers, return_exceptions=True)
-
-    @contextlib.contextmanager
-    def _install_shutdown_signal_handlers(
-        self, workers: list[asyncio.Task[None]], shutdown_event: asyncio.Event
-    ) -> Iterator[bool]:
-        """Registers SIGINT/SIGTERM handlers that request a graceful
-        shutdown (stop polling for new work, let in-flight jobs finish) on
-        the first signal, and force-cancel every worker immediately on a
-        second one. Yields whether handlers were actually installed - not
-        possible on platforms without ``loop.add_signal_handler`` support
-        (e.g. Windows' default event loop) or when called from outside the
-        main thread, in which case this is a no-op and only the default
-        KeyboardInterrupt/external-cancellation behaviour applies.
-        """
         loop = asyncio.get_running_loop()
 
         def _handle_signal(sig: signal.Signals) -> None:
@@ -367,8 +305,7 @@ class Fin:
                     "in-flight job(s)",
                     sig.name,
                 )
-                for worker in workers:
-                    worker.cancel()
+                run_task.cancel()
                 return
             logger.info(
                 "received %s - finishing in-flight job(s), no longer polling for new "
@@ -385,16 +322,112 @@ class Fin:
                 # NotImplementedError: unsupported by this event loop (e.g.
                 # ProactorEventLoop on Windows). RuntimeError: not running in
                 # the main thread, where signal handlers can't be installed
-                # at all.
+                # at all. Either way, fall back to plain
+                # KeyboardInterrupt/external cancellation for that signal.
                 continue
             installed.append(sig)
+        if not installed:
+            logger.debug(
+                "signal-based graceful shutdown is unavailable on this platform/thread - "
+                "only an abrupt KeyboardInterrupt/cancellation is possible"
+            )
 
         try:
-            yield bool(installed)
+            with contextlib.suppress(asyncio.CancelledError):
+                await run_task
         finally:
             for sig in installed:
                 with contextlib.suppress(ValueError):
                     loop.remove_signal_handler(sig)
+
+    async def run_async(
+        self,
+        *,
+        fin_token: str | None = None,
+        poll_interval_seconds: int = _DEFAULT_POLL_INTERVAL_SECONDS,
+        long_poll_timeout_seconds: int = _DEFAULT_LONG_POLL_TIMEOUT_SECONDS,
+        job_lease_seconds: int = _DEFAULT_JOB_LEASE_SECONDS,
+        shutdown_event: asyncio.Event | None = None,
+        shutdown_grace_period_seconds: float | None = None,
+    ) -> None:
+        """Async entry point, for callers who already manage their own
+        event loop (e.g. embedding a Fin inside a larger asyncio
+        application).
+
+        Requires this Fin to already be registered: either a registration
+        was previously persisted by :meth:`register`/:meth:`register_async`
+        (the common case - loaded from ``registration_store``), or you pass
+        ``fin_token`` explicitly here (e.g. one you manage in your own
+        secrets store, obtained out-of-band). Raises
+        :class:`~soarca_fin.exceptions.FinError` if neither is available -
+        call :meth:`register` first.
+
+        Unlike :meth:`run`, this method never installs any signal handlers
+        itself - it is signal-agnostic on purpose, so it behaves the same
+        whether run standalone or embedded inside a larger application
+        that already manages SIGINT/SIGTERM its own way (installing
+        handlers here unconditionally would fight with, or silently
+        override, whatever that application already does). Graceful
+        shutdown is instead driven entirely by ``shutdown_event``: an
+        ordinary :class:`asyncio.Event` *you* create, pass in, and set
+        whenever *you* decide a shutdown should begin (from your own
+        signal handler, another coroutine, a health check, etc.). If your
+        application doesn't need to coordinate with anything else, use
+        :meth:`run` (or the ``soarca-fin run`` CLI command) instead - both
+        install this same default signal handling for you.
+
+        :param fin_token: Use this token directly instead of reading from
+            ``registration_store``. Never persisted. Since the operational
+            parameters SOARCA would normally hand back at registration
+            aren't available in this mode, they default to conservative
+            values below - override ``poll_interval_seconds``/
+            ``long_poll_timeout_seconds``/``job_lease_seconds`` if you know
+            SOARCA's actual configuration.
+        :param shutdown_event: Set this event (from anywhere) to request a
+            graceful shutdown: this Fin stops polling for *new* jobs but
+            lets any job(s) already in flight finish and submit their
+            result before ``run_async`` returns - a soft/graceful
+            shutdown, not an abrupt kill. If you need to abandon in-flight
+            jobs immediately instead, cancel the task running
+            ``run_async`` itself. If omitted, a private event is created
+            internally that nothing ever sets, so the only way to stop is
+            an external cancellation of this coroutine/task.
+        :param shutdown_grace_period_seconds: Once ``shutdown_event`` is
+            set, in-flight jobs are force-cancelled if this many seconds
+            pass without them finishing on their own (use this if your
+            handlers might hang and you'd rather lose a job's result than
+            have ``run_async`` never return). ``None`` (the default) waits
+            indefinitely.
+        """
+        if not self._handlers:
+            raise FinError("no capability handlers registered - use @fin.step or @fin.command")
+
+        registration = self._resolve_registration(
+            fin_token, poll_interval_seconds, long_poll_timeout_seconds, job_lease_seconds
+        )
+
+        if shutdown_event is None:
+            shutdown_event = asyncio.Event()
+
+        async with httpx.AsyncClient(base_url=self.base_url.rstrip("/")) as http_client:
+            client = SoarcaClient(self.base_url, http_client=http_client)
+
+            workers = [
+                asyncio.create_task(self._worker_loop(client, registration, shutdown_event))
+                for _ in range(self.concurrency)
+            ]
+
+            try:
+                if shutdown_grace_period_seconds is None:
+                    await asyncio.gather(*workers)
+                else:
+                    await self._run_with_grace_period(
+                        workers, shutdown_event, shutdown_grace_period_seconds
+                    )
+            finally:
+                for worker in workers:
+                    worker.cancel()
+                await asyncio.gather(*workers, return_exceptions=True)
 
     async def _run_with_grace_period(
         self,

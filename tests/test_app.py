@@ -482,10 +482,10 @@ async def test_worker_loop_finishes_in_flight_job_despite_shutdown_request() -> 
 
 
 @respx.mock
-async def test_run_async_sigterm_finishes_in_flight_job_then_exits() -> None:
-    """End-to-end: a real SIGTERM triggers a graceful shutdown - the
-    in-flight job still completes and run_async returns normally
-    afterwards (no new job is polled for)."""
+async def test_run_async_shutdown_event_finishes_in_flight_job_then_exits() -> None:
+    """End-to-end via run_async: setting shutdown_event triggers a graceful
+    shutdown - the in-flight job still completes and run_async returns
+    normally afterwards (no new job is polled for)."""
     fin = Fin(BASE_URL, registration_store=InMemoryRegistrationStore(), concurrency=1)
 
     handler_started = asyncio.Event()
@@ -504,7 +504,116 @@ async def test_run_async_sigterm_finishes_in_flight_job_then_exits() -> None:
     )
     submit_route = respx.put(f"{BASE_URL}/fin/jobs/{job_id}").mock(return_value=httpx.Response(204))
 
-    run_task = asyncio.create_task(fin.run_async(fin_token="tok"))
+    shutdown_event = asyncio.Event()
+    run_task = asyncio.create_task(fin.run_async(fin_token="tok", shutdown_event=shutdown_event))
+    await asyncio.wait_for(handler_started.wait(), timeout=1)
+
+    shutdown_event.set()
+    await asyncio.sleep(0.02)
+    assert not submit_route.called
+
+    finish_handler.set()
+    await asyncio.wait_for(run_task, timeout=1)  # returns normally, no exception
+
+    assert submit_route.called
+
+
+@respx.mock
+async def test_run_async_cancellation_forces_immediate_shutdown() -> None:
+    """Cancelling the task running run_async (the caller's own way of
+    forcing an immediate shutdown, e.g. after a second signal in an
+    embedding application) abandons any in-flight job instead of waiting
+    for a handler that never finishes on its own."""
+    fin = Fin(BASE_URL, registration_store=InMemoryRegistrationStore(), concurrency=1)
+
+    handler_started = asyncio.Event()
+
+    @fin.command("ssh-runner")
+    async def handler(ctx: CommandContext) -> dict[str, str]:
+        handler_started.set()
+        await asyncio.sleep(100)  # never finishes on its own
+        return {"output": "done"}
+
+    job_id, job_payload = _job_payload()
+    respx.post(f"{BASE_URL}/fin/poll").mock(return_value=httpx.Response(200, json=job_payload))
+    respx.patch(f"{BASE_URL}/fin/jobs/{job_id}/status").mock(
+        return_value=httpx.Response(200, json={})
+    )
+    respx.put(f"{BASE_URL}/fin/jobs/{job_id}").mock(return_value=httpx.Response(204))
+
+    shutdown_event = asyncio.Event()
+    run_task = asyncio.create_task(fin.run_async(fin_token="tok", shutdown_event=shutdown_event))
+    await asyncio.wait_for(handler_started.wait(), timeout=1)
+
+    shutdown_event.set()
+    await asyncio.sleep(0.02)
+    run_task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(run_task, timeout=1)
+
+
+@respx.mock
+async def test_run_async_shutdown_grace_period_forces_cancellation_of_hung_job() -> None:
+    """shutdown_grace_period_seconds forces a shutdown on its own, without
+    needing an explicit cancellation, once it elapses with the job still
+    running."""
+    fin = Fin(BASE_URL, registration_store=InMemoryRegistrationStore(), concurrency=1)
+
+    handler_started = asyncio.Event()
+
+    @fin.command("ssh-runner")
+    async def handler(ctx: CommandContext) -> dict[str, str]:
+        handler_started.set()
+        await asyncio.sleep(100)  # never finishes on its own
+        return {"output": "done"}
+
+    job_id, job_payload = _job_payload()
+    respx.post(f"{BASE_URL}/fin/poll").mock(return_value=httpx.Response(200, json=job_payload))
+    respx.patch(f"{BASE_URL}/fin/jobs/{job_id}/status").mock(
+        return_value=httpx.Response(200, json={})
+    )
+    respx.put(f"{BASE_URL}/fin/jobs/{job_id}").mock(return_value=httpx.Response(204))
+
+    shutdown_event = asyncio.Event()
+    run_task = asyncio.create_task(
+        fin.run_async(
+            fin_token="tok", shutdown_event=shutdown_event, shutdown_grace_period_seconds=0.05
+        )
+    )
+    await asyncio.wait_for(handler_started.wait(), timeout=1)
+
+    shutdown_event.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(run_task, timeout=1)
+
+
+@respx.mock
+async def test_run_with_default_signal_handling_sigterm_finishes_in_flight_job() -> None:
+    """End-to-end: a real SIGTERM triggers a graceful shutdown via the
+    default signal handling installed by run()/the CLI - the in-flight
+    job still completes and the run returns normally afterwards (no new
+    job is polled for)."""
+    fin = Fin(BASE_URL, registration_store=InMemoryRegistrationStore(), concurrency=1)
+
+    handler_started = asyncio.Event()
+    finish_handler = asyncio.Event()
+
+    @fin.command("ssh-runner")
+    async def handler(ctx: CommandContext) -> dict[str, str]:
+        handler_started.set()
+        await finish_handler.wait()
+        return {"output": "done"}
+
+    job_id, job_payload = _job_payload()
+    respx.post(f"{BASE_URL}/fin/poll").mock(return_value=httpx.Response(200, json=job_payload))
+    respx.patch(f"{BASE_URL}/fin/jobs/{job_id}/status").mock(
+        return_value=httpx.Response(200, json={})
+    )
+    submit_route = respx.put(f"{BASE_URL}/fin/jobs/{job_id}").mock(return_value=httpx.Response(204))
+
+    run_task = asyncio.create_task(fin._run_with_default_signal_handling(fin_token="tok"))
     await asyncio.wait_for(handler_started.wait(), timeout=1)
 
     os.kill(os.getpid(), signal.SIGTERM)
@@ -518,7 +627,7 @@ async def test_run_async_sigterm_finishes_in_flight_job_then_exits() -> None:
 
 
 @respx.mock
-async def test_run_async_second_sigterm_forces_immediate_shutdown() -> None:
+async def test_run_with_default_signal_handling_second_sigterm_forces_immediate_shutdown() -> None:
     """A second SIGTERM (sent after a graceful shutdown is already under
     way) abandons any in-flight job and forces an immediate exit, instead
     of waiting for a handler that never finishes on its own."""
@@ -539,44 +648,14 @@ async def test_run_async_second_sigterm_forces_immediate_shutdown() -> None:
     )
     respx.put(f"{BASE_URL}/fin/jobs/{job_id}").mock(return_value=httpx.Response(204))
 
-    run_task = asyncio.create_task(fin.run_async(fin_token="tok"))
+    run_task = asyncio.create_task(fin._run_with_default_signal_handling(fin_token="tok"))
     await asyncio.wait_for(handler_started.wait(), timeout=1)
 
     os.kill(os.getpid(), signal.SIGTERM)
     await asyncio.sleep(0.02)
     os.kill(os.getpid(), signal.SIGTERM)
 
-    with pytest.raises(asyncio.CancelledError):
-        await asyncio.wait_for(run_task, timeout=1)
-
-
-@respx.mock
-async def test_run_async_shutdown_grace_period_forces_cancellation_of_hung_job() -> None:
-    """shutdown_grace_period_seconds forces a shutdown on its own, without
-    needing a second signal, once it elapses with the job still running."""
-    fin = Fin(BASE_URL, registration_store=InMemoryRegistrationStore(), concurrency=1)
-
-    handler_started = asyncio.Event()
-
-    @fin.command("ssh-runner")
-    async def handler(ctx: CommandContext) -> dict[str, str]:
-        handler_started.set()
-        await asyncio.sleep(100)  # never finishes on its own
-        return {"output": "done"}
-
-    job_id, job_payload = _job_payload()
-    respx.post(f"{BASE_URL}/fin/poll").mock(return_value=httpx.Response(200, json=job_payload))
-    respx.patch(f"{BASE_URL}/fin/jobs/{job_id}/status").mock(
-        return_value=httpx.Response(200, json={})
-    )
-    respx.put(f"{BASE_URL}/fin/jobs/{job_id}").mock(return_value=httpx.Response(204))
-
-    run_task = asyncio.create_task(
-        fin.run_async(fin_token="tok", shutdown_grace_period_seconds=0.05)
-    )
-    await asyncio.wait_for(handler_started.wait(), timeout=1)
-
-    os.kill(os.getpid(), signal.SIGTERM)
-
-    with pytest.raises(asyncio.CancelledError):
-        await asyncio.wait_for(run_task, timeout=1)
+    # _run_with_default_signal_handling suppresses the CancelledError from
+    # the forced shutdown itself - there's no caller left to propagate a
+    # cancellation to, this is the process's own top-level entry point.
+    await asyncio.wait_for(run_task, timeout=1)

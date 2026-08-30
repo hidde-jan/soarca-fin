@@ -28,10 +28,10 @@ def _job_payload(capability_type: str = "ssh-runner") -> tuple[object, dict[str,
     payload = {
         "job": {
             "job_id": str(job_id),
-            "execution_id": str(uuid4()),
+            "run_id": str(uuid4()),
             "playbook_id": "playbook--1",
             "step_id": "step--1",
-            "step_execution_id": str(uuid4()),
+            "step_run_id": str(uuid4()),
             "capability_type": capability_type,
             "lease_expires_in_seconds": 60,
             "step": {},

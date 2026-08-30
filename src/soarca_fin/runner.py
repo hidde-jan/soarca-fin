@@ -51,10 +51,10 @@ def _as_variables(value: Mapping[str, Any] | None) -> dict[str, Variable]:
 
 def _job_meta(job: Job) -> JobMeta:
     return JobMeta(
-        execution_id=job.execution_id,
+        run_id=job.run_id,
         playbook_id=job.playbook_id,
         step_id=job.step_id,
-        step_execution_id=job.step_execution_id,
+        step_run_id=job.step_run_id,
         capability_type=job.capability_type,
         name=job.step.name,
         description=job.step.description,
@@ -68,7 +68,7 @@ async def run_job(job: Job, spec: HandlerSpec, report_progress: ReportProgress) 
     meta = _job_meta(job)
     handler_log = _bind_logger(
         job_id=str(job.job_id),
-        execution_id=str(job.execution_id),
+        run_id=str(job.run_id),
         step_id=job.step_id,
         capability_type=job.capability_type,
     )

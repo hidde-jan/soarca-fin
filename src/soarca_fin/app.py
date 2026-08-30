@@ -593,10 +593,10 @@ class Fin:
         self, client: SoarcaClient, registration: FinRegistration, job: Job
     ) -> None:
         logger.info(
-            "received job job_id=%s capability_type=%s execution_id=%s step_id=%s",
+            "received job job_id=%s capability_type=%s run_id=%s step_id=%s",
             job.job_id,
             job.capability_type,
-            job.execution_id,
+            job.run_id,
             job.step_id,
         )
 

@@ -18,10 +18,10 @@ from soarca_fin.runner import StepResult, run_job
 def _make_job(*, commands: list[Command], targets: list[ResolvedTarget]) -> Job:
     return Job(
         job_id=uuid4(),
-        execution_id=uuid4(),
+        run_id=uuid4(),
         playbook_id="playbook--1",
         step_id="step--1",
-        step_execution_id=uuid4(),
+        step_run_id=uuid4(),
         capability_type="test-tool",
         lease_expires_in_seconds=60,
         step=StepInfo(name="a step"),
@@ -176,7 +176,7 @@ async def test_step_handler_receives_bound_logger_with_job_context() -> None:
     assert isinstance(seen["log"], logging.LoggerAdapter)
     extra = seen["extra"]
     assert extra["job_id"] == str(job.job_id)
-    assert extra["execution_id"] == str(job.execution_id)
+    assert extra["run_id"] == str(job.run_id)
     assert extra["step_id"] == job.step_id
     assert extra["capability_type"] == job.capability_type
 

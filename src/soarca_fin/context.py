@@ -49,10 +49,10 @@ class JobMeta:
     """Identifying/descriptive metadata about the step invocation a job
     belongs to - the same for every command/target within one job."""
 
-    execution_id: UUID
+    run_id: UUID
     playbook_id: str
     step_id: str
-    step_execution_id: UUID
+    step_run_id: UUID
     capability_type: str
     name: str | None
     description: str | None

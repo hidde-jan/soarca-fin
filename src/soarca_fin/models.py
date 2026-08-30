@@ -112,10 +112,10 @@ class Job(_Model):
     """One poll-able unit of work: one CACAO step invocation."""
 
     job_id: UUID
-    execution_id: UUID
+    run_id: UUID
     playbook_id: str
     step_id: str
-    step_execution_id: UUID
+    step_run_id: UUID
     capability_type: str
     lease_expires_in_seconds: int
     step: StepInfo = Field(default_factory=StepInfo)

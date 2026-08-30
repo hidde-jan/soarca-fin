@@ -274,7 +274,7 @@ Python's root logger for you via `logging.basicConfig()`, at `INFO` level by
 default, so you see each job's lifecycle without any setup:
 
 ```
-2024-01-01 12:00:00,000 INFO     soarca_fin: received job job_id=... capability_type=my-tool execution_id=... step_id=...
+2024-01-01 12:00:00,000 INFO     soarca_fin: received job job_id=... capability_type=my-tool run_id=... step_id=...
 2024-01-01 12:00:00,050 INFO     soarca_fin: completed job job_id=...: state=success
 ```
 
@@ -285,7 +285,7 @@ logging - `basicConfig()` never overrides an existing setup.
 
 Both `CommandContext` and `StepContext` also expose `ctx.log`, a
 [`logging.LoggerAdapter`][logger-adapter] pre-bound with this job's
-identifying context (`job_id`, `execution_id`, `step_id`, `capability_type`,
+identifying context (`job_id`, `run_id`, `step_id`, `capability_type`,
 plus `target_index`/`command_index` for command handlers). Log through it
 instead of grabbing your own logger, so every line your handler emits is
 automatically traceable back to the job/command that produced it:

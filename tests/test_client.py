@@ -68,18 +68,18 @@ async def test_poll_no_job_returns_none() -> None:
 @respx.mock
 async def test_poll_returns_job() -> None:
     job_id = str(uuid4())
-    execution_id = str(uuid4())
-    step_execution_id = str(uuid4())
+    run_id = str(uuid4())
+    step_run_id = str(uuid4())
     respx.post(f"{BASE_URL}/fin/poll").mock(
         return_value=httpx.Response(
             200,
             json={
                 "job": {
                     "job_id": job_id,
-                    "execution_id": execution_id,
+                    "run_id": run_id,
                     "playbook_id": "playbook--1",
                     "step_id": "step--1",
-                    "step_execution_id": step_execution_id,
+                    "step_run_id": step_run_id,
                     "capability_type": "ssh",
                     "lease_expires_in_seconds": 60,
                     "step": {},
